@@ -176,7 +176,7 @@ document
         action: "getAsbPlayerDiagnostic",
       });
       if (response?.error || typeof response?.diagnostic !== "string") {
-        throw new Error(response?.error ?? "Could not collect ASB Player diagnostics");
+        throw new Error(response?.error ?? "Could not collect asbplayer diagnostics");
       }
       await copyText(response.diagnostic);
       if (status) status.textContent = "Diagnóstico copiado.";

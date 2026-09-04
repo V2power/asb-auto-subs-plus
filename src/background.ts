@@ -301,7 +301,7 @@ async function waitForAsbPlayerMedia() {
     try {
       const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
       if (!response.ok) {
-        throw new Error(`ASB Player returned HTTP ${response.status}`);
+        throw new Error(`asbplayer returned HTTP ${response.status}`);
       }
       const body = (await response.json()) as { media?: AsbPlayerMedia[] };
       const activeMedia = Array.isArray(body.media)
@@ -309,12 +309,12 @@ async function waitForAsbPlayerMedia() {
         : [];
       await appendAsbPlayerLog(
         "info",
-        `Active ASB Player media — attempt ${attempt}/${attempts}: ${activeMedia.length}`,
+        `Active asbplayer media — attempt ${attempt}/${attempts}: ${activeMedia.length}`,
       );
       if (activeMedia.length > 0) {
         await appendAsbPlayerLog(
           "info",
-          `ASB Player media found: ${activeMedia[0].title ?? "untitled"}`,
+          `asbplayer media found: ${activeMedia[0].title ?? "untitled"}`,
         );
         return;
       }
@@ -322,13 +322,13 @@ async function waitForAsbPlayerMedia() {
       const details = reason instanceof Error ? reason.message : String(reason);
       await appendAsbPlayerLog(
         "error",
-        `ASB Player check — attempt ${attempt}/${attempts}: ${details}`,
+        `asbplayer check — attempt ${attempt}/${attempts}: ${details}`,
       );
       if (attempt === attempts) throw new Error(details);
     }
     await wait(1500);
   }
-  throw new Error("ASB Player did not find an active media item in time");
+  throw new Error("asbplayer did not find an active media item in time");
 }
 
 async function loadSubtitlesIntoAsbPlayer(
@@ -356,10 +356,10 @@ async function loadSubtitlesIntoAsbPlayer(
   const responseText = await response.text();
   await appendAsbPlayerLog(
     "info",
-    `ASB Player load-subtitles response HTTP ${response.status}: ${responseText.slice(0, 500) || "(empty response)"}`,
+    `asbplayer load-subtitles response HTTP ${response.status}: ${responseText.slice(0, 500) || "(empty response)"}`,
   );
   if (!response.ok) {
-    throw new Error(`ASB Player returned HTTP ${response.status}`);
+    throw new Error(`asbplayer returned HTTP ${response.status}`);
   }
 }
 
@@ -549,11 +549,11 @@ async function createAsbPlayerDiagnostic() {
   try {
     const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
     const responseBody = (await response.text()).slice(0, 6000);
-    lines.push(`ASB Player endpoint: HTTP ${response.status}`);
+    lines.push(`asbplayer endpoint: HTTP ${response.status}`);
     lines.push(`Bound media: ${responseBody || "(empty response)"}`);
   } catch (reason) {
     const details = reason instanceof Error ? reason.message : String(reason);
-    lines.push(`ASB Player endpoint: unavailable (${details})`);
+    lines.push(`asbplayer endpoint: unavailable (${details})`);
   }
   lines.push("Recent auto-load events:");
   if (entries.length === 0) {
@@ -674,7 +674,7 @@ async function downloadSubs(tabId: number, anilistId: number, episode: number) {
       return { asbPlayerLoaded: false, name: selectedSub.name };
     }
     if (compressedFileExtensions.has(selectedSub.extension)) {
-      const message = `Downloaded ${selectedSub.name}, but ASB Player cannot load compressed subtitle archives automatically`;
+      const message = `Downloaded ${selectedSub.name}, but asbplayer cannot load compressed subtitle archives automatically`;
       await appendAsbPlayerLog("error", message);
       return message;
     }
@@ -682,12 +682,12 @@ async function downloadSubs(tabId: number, anilistId: number, episode: number) {
       await loadSubtitlesIntoAsbPlayer(selectedSub, formattedContent ?? undefined);
       await appendAsbPlayerLog(
         "info",
-        `Loaded ${selectedSub.name} into ASB Player`,
+        `Loaded ${selectedSub.name} into asbplayer`,
       );
       return { asbPlayerLoaded: true, name: selectedSub.name };
     } catch (reason) {
       const details = reason instanceof Error ? reason.message : String(reason);
-      const message = `Downloaded ${selectedSub.name}, but ASB Player auto-load failed: ${details}`;
+      const message = `Downloaded ${selectedSub.name}, but asbplayer auto-load failed: ${details}`;
       await appendAsbPlayerLog("error", message);
       return message;
     }
@@ -779,7 +779,7 @@ async function processNavigation(details: NavigationDetails) {
         await notifyError(details.tabId, result);
       } else {
         const message = result.asbPlayerLoaded
-          ? `Downloaded and loaded ${result.name} into ASB Player`
+          ? `Downloaded and loaded ${result.name} into asbplayer`
           : `Successfully downloaded ${result.name}`;
         await chrome.tabs.sendMessage(details.tabId, {
           action: "notifySuccess",
