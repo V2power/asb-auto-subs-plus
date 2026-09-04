@@ -22,6 +22,21 @@ const asbPlayerBaseUrl = "http://127.0.0.1:8766/asbplayer";
 const asbPlayerLogKey = "asbPlayerLog";
 const maxAsbPlayerLogEntries = 30;
 
+function getTrackedDownloadIds(value: unknown): number[] {
+  // Older versions stored a single number. Accept it so existing installs can
+  // still remove the subtitle that was downloaded before this upgrade.
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.filter((id): id is number => typeof id === "number"))];
+}
+
+async function trackDownloadedFile(tabId: number, downloadId: number) {
+  const storageKey = `${lastDownloadedKeyPrefix}${tabId}`;
+  const stored = await chrome.storage.local.get(storageKey);
+  const downloadIds = getTrackedDownloadIds(stored[storageKey]);
+  if (downloadIds.indexOf(downloadId) === -1) downloadIds.push(downloadId);
+  await chrome.storage.local.set({ [storageKey]: downloadIds });
+}
+
 async function alreadyDownloaded(id: number, episode: number) {
   const key = `${downloadedRangeKeyPrefix}${id}_${episode}`;
   const result = await chrome.storage.local.get([key]);
@@ -663,9 +678,7 @@ async function downloadSubs(tabId: number, anilistId: number, episode: number) {
     if (compressedFileExtensions.has(selectedSub.extension)) {
       await markMultipleAsDownloaded(selectedSub.name, anilistId);
     }
-    await chrome.storage.local.set({
-      [`${lastDownloadedKeyPrefix}${tabId}`]: downloadId,
-    });
+    await trackDownloadedFile(tabId, downloadId);
 
     const { asbplayerAutoLoad } = await chrome.storage.sync.get(
       "asbplayerAutoLoad",
@@ -701,13 +714,26 @@ async function removeLastDownloaded(tabId: number) {
   const autoDelete = (await chrome.storage.sync.get("autoDelete")).autoDelete;
   if (autoDelete)  {
     const storageKey = `${lastDownloadedKeyPrefix}${tabId}`;
-    const downloadId = (await chrome.storage.local.get(storageKey))[storageKey];
-    if (typeof downloadId !== "number") return;
-    try {
-      await chrome.downloads.removeFile(downloadId);
+    const stored = await chrome.storage.local.get(storageKey);
+    const downloadIds = getTrackedDownloadIds(stored[storageKey]);
+    if (downloadIds.length === 0) return;
+
+    const failedDownloadIds: number[] = [];
+    for (const downloadId of downloadIds) {
+      try {
+        await chrome.downloads.removeFile(downloadId);
+      } catch (reason) {
+        // Keep failed IDs so they are not lost and can be retried the next
+        // time the extension cleans files for this tab.
+        failedDownloadIds.push(downloadId);
+        console.warn("Could not remove a previous subtitle", reason);
+      }
+    }
+
+    if (failedDownloadIds.length > 0) {
+      await chrome.storage.local.set({ [storageKey]: failedDownloadIds });
+    } else {
       await chrome.storage.local.remove(storageKey);
-    } catch (reason) {
-      console.warn("Could not remove the previous subtitle", reason);
     }
   }
 }
