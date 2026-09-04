@@ -14,6 +14,9 @@ const supportedFileExtensions = new Set([
   ".7z",
 ]);
 const compressedFileExtensions = new Set([".zip", ".rar", ".7z"]);
+const asbPlayerBaseUrl = "http://127.0.0.1:8766/asbplayer";
+const asbPlayerLogKey = "asbPlayerLog";
+const maxAsbPlayerLogEntries = 30;
 
 async function alreadyDownloaded(id: number, episode: number) {
   const key = `${id}_${episode}`;
@@ -44,6 +47,27 @@ async function notifyError(tabId: number, error: string) {
   } catch (reason) {
     console.warn("Could not notify the tab", reason);
   }
+}
+
+async function getApiKey(): Promise<string | null> {
+  const localStorageItem = await chrome.storage.local.get("apiKey");
+  if (
+    typeof localStorageItem.apiKey === "string" &&
+    localStorageItem.apiKey.length > 0
+  ) {
+    return localStorageItem.apiKey;
+  }
+
+  const legacyStorageItem = await chrome.storage.sync.get("apiKey");
+  if (
+    typeof legacyStorageItem.apiKey !== "string" ||
+    legacyStorageItem.apiKey.length === 0
+  ) {
+    return null;
+  }
+  await chrome.storage.local.set({ apiKey: legacyStorageItem.apiKey });
+  await chrome.storage.sync.remove("apiKey");
+  return legacyStorageItem.apiKey;
 }
 
 async function fetchAnilistId(title: string) {
@@ -107,8 +131,8 @@ async function getAnilistIdAndEpisode(tabId: number, animeSiteKey: string) {
 }
 
 async function fetchSubs(anilistId: number, episode: number) {
-  const { apiKey: jimakuAPIKey } = await chrome.storage.local.get("apiKey");
-  if (typeof jimakuAPIKey !== "string" || jimakuAPIKey.length === 0) {
+  const jimakuAPIKey = await getApiKey();
+  if (!jimakuAPIKey) {
     return "Please configure your Jimaku API key";
   }
   const BASE_URL = "https://jimaku.cc/api";
@@ -196,6 +220,148 @@ type DownloadableSub = {
   extension: string;
 };
 
+type AsbPlayerLogEntry = {
+  timestamp: string;
+  level: "info" | "error";
+  message: string;
+};
+
+type DownloadResult = {
+  asbPlayerLoaded: boolean;
+  name: string;
+};
+
+type AsbPlayerMedia = {
+  active?: boolean;
+  title?: string;
+};
+
+async function appendAsbPlayerLog(
+  level: AsbPlayerLogEntry["level"],
+  message: string,
+) {
+  const { [asbPlayerLogKey]: existingLog } = await chrome.storage.local.get(
+    asbPlayerLogKey,
+  );
+  const entries = Array.isArray(existingLog) ? existingLog : [];
+  const entry: AsbPlayerLogEntry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+  };
+  await chrome.storage.local.set({
+    [asbPlayerLogKey]: [...entries, entry].slice(-maxAsbPlayerLogEntries),
+  });
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 8192;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(index, index + chunkSize)),
+    );
+  }
+  return btoa(binary);
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForAsbPlayerMedia() {
+  const attempts = 12;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
+      if (!response.ok) {
+        throw new Error(`ASB Player returned HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as { media?: AsbPlayerMedia[] };
+      const activeMedia = Array.isArray(body.media)
+        ? body.media.filter((media) => media.active === true)
+        : [];
+      await appendAsbPlayerLog(
+        "info",
+        `Active ASB Player media — attempt ${attempt}/${attempts}: ${activeMedia.length}`,
+      );
+      if (activeMedia.length > 0) {
+        await appendAsbPlayerLog(
+          "info",
+          `ASB Player media found: ${activeMedia[0].title ?? "untitled"}`,
+        );
+        return;
+      }
+    } catch (reason) {
+      const details = reason instanceof Error ? reason.message : String(reason);
+      await appendAsbPlayerLog(
+        "error",
+        `ASB Player check — attempt ${attempt}/${attempts}: ${details}`,
+      );
+      if (attempt === attempts) throw new Error(details);
+    }
+    await wait(1500);
+  }
+  throw new Error("ASB Player did not find an active media item in time");
+}
+
+async function loadSubtitlesIntoAsbPlayer(sub: DownloadableSub) {
+  const subtitleResponse = await fetch(sub.url);
+  if (!subtitleResponse.ok) {
+    throw new Error(`Could not read subtitle file (${subtitleResponse.status})`);
+  }
+  const base64 = arrayBufferToBase64(await subtitleResponse.arrayBuffer());
+  await waitForAsbPlayerMedia();
+  const response = await fetch(`${asbPlayerBaseUrl}/load-subtitles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      files: [{ name: sub.name, base64 }],
+    }),
+  });
+  const responseText = await response.text();
+  await appendAsbPlayerLog(
+    "info",
+    `ASB Player load-subtitles response HTTP ${response.status}: ${responseText.slice(0, 500) || "(empty response)"}`,
+  );
+  if (!response.ok) {
+    throw new Error(`ASB Player returned HTTP ${response.status}`);
+  }
+}
+
+async function createAsbPlayerDiagnostic() {
+  const { [asbPlayerLogKey]: existingLog } = await chrome.storage.local.get(
+    asbPlayerLogKey,
+  );
+  const entries: AsbPlayerLogEntry[] = Array.isArray(existingLog)
+    ? existingLog
+    : [];
+  const lines = [
+    `ASB Auto Subs ${chrome.runtime.getManifest().version}`,
+    `Generated: ${new Date().toISOString()}`,
+  ];
+  try {
+    const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
+    const responseBody = (await response.text()).slice(0, 6000);
+    lines.push(`ASB Player endpoint: HTTP ${response.status}`);
+    lines.push(`Bound media: ${responseBody || "(empty response)"}`);
+  } catch (reason) {
+    const details = reason instanceof Error ? reason.message : String(reason);
+    lines.push(`ASB Player endpoint: unavailable (${details})`);
+  }
+  lines.push("Recent auto-load events:");
+  if (entries.length === 0) {
+    lines.push("(none)");
+  } else {
+    entries.forEach((entry) => {
+      lines.push(`[${entry.timestamp}] ${entry.level.toUpperCase()}: ${entry.message}`);
+    });
+  }
+  return lines.join("\n");
+}
+
 function validateSub(sub: Subs): DownloadableSub | null {
   let url: URL;
   try {
@@ -259,6 +425,31 @@ async function downloadSubs(anilistId: number, episode: number) {
       [lastDownloadedKeyName]: key,
       [key]: downloadId,
     });
+
+    const { asbplayerAutoLoad } = await chrome.storage.sync.get(
+      "asbplayerAutoLoad",
+    );
+    if (asbplayerAutoLoad !== true) {
+      return { asbPlayerLoaded: false, name: selectedSub.name };
+    }
+    if (compressedFileExtensions.has(selectedSub.extension)) {
+      const message = `Downloaded ${selectedSub.name}, but ASB Player cannot load compressed subtitle archives automatically`;
+      await appendAsbPlayerLog("error", message);
+      return message;
+    }
+    try {
+      await loadSubtitlesIntoAsbPlayer(selectedSub);
+      await appendAsbPlayerLog(
+        "info",
+        `Loaded ${selectedSub.name} into ASB Player`,
+      );
+      return { asbPlayerLoaded: true, name: selectedSub.name };
+    } catch (reason) {
+      const details = reason instanceof Error ? reason.message : String(reason);
+      const message = `Downloaded ${selectedSub.name}, but ASB Player auto-load failed: ${details}`;
+      await appendAsbPlayerLog("error", message);
+      return message;
+    }
   } catch (reason) {
     console.error("Subtitle download failed", reason);
     return "The subtitle download failed";
@@ -283,7 +474,13 @@ async function removeLastDownloaded() {
   }
 }
 
-async function processNavigation(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
+type NavigationDetails = {
+  tabId: number;
+  frameId: number;
+  url: string;
+};
+
+async function processNavigation(details: NavigationDetails) {
   if (details.frameId !== 0) return;
   try {
     const tab = await chrome.tabs.get(details.tabId);
@@ -302,8 +499,8 @@ async function processNavigation(details: chrome.webNavigation.WebNavigationTran
       files: ["dist/injectScript.js"],
     });
 
-    const { apiKey } = await chrome.storage.local.get("apiKey");
-    if (typeof apiKey !== "string" || apiKey.length === 0) {
+    const apiKey = await getApiKey();
+    if (!apiKey) {
       await notifyError(
         details.tabId,
         "Please get your jimaku API Key from https://jimaku.cc/ and set it by clicking the extension icon",
@@ -334,9 +531,18 @@ async function processNavigation(details: chrome.webNavigation.WebNavigationTran
     if (downloadsInProgress.has(downloadKey)) return;
     downloadsInProgress.add(downloadKey);
     try {
-      const error = await downloadSubs(anilistId, episode);
-      if (error) await notifyError(details.tabId, error);
-      else await chrome.tabs.sendMessage(details.tabId, { action: "notifySuccess" });
+      const result = await downloadSubs(anilistId, episode);
+      if (typeof result === "string") {
+        await notifyError(details.tabId, result);
+      } else {
+        const message = result.asbPlayerLoaded
+          ? `Downloaded and loaded ${result.name} into ASB Player`
+          : `Successfully downloaded ${result.name}`;
+        await chrome.tabs.sendMessage(details.tabId, {
+          action: "notifySuccess",
+          message,
+        });
+      }
     } finally {
       downloadsInProgress.delete(downloadKey);
     }
@@ -347,4 +553,20 @@ async function processNavigation(details: chrome.webNavigation.WebNavigationTran
 
 chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   void processNavigation(details);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete" || !tab.url) return;
+  void processNavigation({ tabId, frameId: 0, url: tab.url });
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.action !== "getAsbPlayerDiagnostic") return;
+  void createAsbPlayerDiagnostic()
+    .then((diagnostic) => sendResponse({ diagnostic }))
+    .catch((reason) => {
+      const details = reason instanceof Error ? reason.message : String(reason);
+      sendResponse({ error: details });
+    });
+  return true;
 });

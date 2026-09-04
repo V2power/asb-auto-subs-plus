@@ -57,6 +57,7 @@ class Miruro implements AnimeSite {
 
 export const animeSites = new Map<string, AnimeSite>([
   ["hianime.to", new hianime()],
+  ["hianimez.to", new hianime()],
   ["miruro.tv", new Miruro()],
   ["miruro.online", new Miruro()],
   ["miruro.to", new Miruro()],
