@@ -138,9 +138,9 @@ async function loadFormattingSettings() {
   const formatSubtitles = document.getElementById(
     "formatSubtitles",
   ) as HTMLInputElement | null;
-  if (formatSubtitles) formatSubtitles.checked = settings.formatSubtitles === true;
+  if (formatSubtitles) formatSubtitles.checked = settings.formatSubtitles !== false;
   formattingOptions().forEach((option) => {
-    option.checked = settings[option.id] === true;
+    option.checked = settings[option.id] !== false;
   });
   setFormattingOptionsEnabled(formatSubtitles?.checked === true);
   updateSelectAllState();

@@ -21,6 +21,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "notifySuccess":
       createToast(message.message ?? "Successfully downloaded subs", "#0a9611");
+      break;
   }
 });
 
