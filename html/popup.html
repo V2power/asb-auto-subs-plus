@@ -1,28 +1,53 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <link rel="stylesheet" href="../css/popup.css">
 </head>
-
 <body>
-  <form id="apiKeyForm">
-    <label for="apiKey">Jimaku API Key</label>
-    <input type="text" id="apiKey" name="apiKey" required>
-    <div class="set-container">
-      <button class="set-btn" type="submit">Set ↵</button>
-      <p class="key-info">API Key not set yet! Get it on <a href="https://jimaku.cc/login">jimaku</a></p>
-    </div>
-  </form>
-  <section class="settings-container">
-    <h4>Settings</h4>
-    <div class="settings-content">
-      <input type="checkbox" name="autoDelete" id="autoDelete">
-      <label for="autoDelete">Auto Deletion</label>
-    </div>
-  </section>
+  <main class="popup-card">
+    <header class="popup-header">
+      <img src="../imgs/logo.png" alt="" class="logo">
+      <div><p class="eyebrow">ASB PLAYER</p><h1>Legendas automáticas</h1></div>
+    </header>
+    <form id="apiKeyForm">
+      <label for="apiKey">Chave da API Jimaku</label>
+      <div class="input-row">
+        <input type="password" id="apiKey" name="apiKey" placeholder="Cole sua chave aqui" autocomplete="off" required>
+        <button class="set-btn" type="submit">Salvar</button>
+      </div>
+      <p class="key-info">Configure sua chave em <a href="https://jimaku.cc/login" target="_blank">jimaku.cc</a>.</p>
+    </form>
+    <section class="settings-container" aria-labelledby="settings-title">
+      <h2 id="settings-title">Preferências</h2>
+      <label class="setting-row" for="autoDelete">
+        <span><strong>Excluir ao trocar de episódio</strong><small>Remove do computador a última legenda baixada.</small></span>
+        <input type="checkbox" name="autoDelete" id="autoDelete">
+      </label>
+      <label class="setting-row" for="asbplayerAutoLoad">
+        <span><strong>Adicionar ao ASB Player</strong><small>Envia a legenda formatada automaticamente ao ASB Player.</small></span>
+        <input type="checkbox" name="asbplayerAutoLoad" id="asbplayerAutoLoad">
+      </label>
+      <label class="setting-row" for="formatSubtitles">
+        <span><strong>Formatar legendas</strong><small>Remove nomes, furigana e quebras de linha das legendas textuais.</small></span>
+        <input type="checkbox" name="formatSubtitles" id="formatSubtitles">
+      </label>
+      <div id="formattingOptions" class="formatting-options">
+        <label class="format-option select-all" for="selectAllFormatting"><span>Selecionar todas as formatações</span><input type="checkbox" id="selectAllFormatting"></label>
+        <label class="format-option" for="removeSpeakerNames"><span>Remover nomes de personagens</span><input type="checkbox" id="removeSpeakerNames"></label>
+        <label class="format-option" for="removeFurigana"><span>Remover furigana entre parênteses</span><input type="checkbox" id="removeFurigana"></label>
+        <label class="format-option" for="removeAssTags"><span>Remover tags de formatação ASS</span><input type="checkbox" id="removeAssTags"></label>
+        <label class="format-option" for="removeDecorativeMarkers"><span>Remover marcadores decorativos ＜ ＞ ➨ ➡</span><input type="checkbox" id="removeDecorativeMarkers"></label>
+        <label class="format-option" for="joinSubtitleLines"><span>Unir linhas da mesma legenda</span><input type="checkbox" id="joinSubtitleLines"></label>
+      </div>
+    </section>
+    <section class="diagnostics" aria-labelledby="diagnostics-title">
+      <h2 id="diagnostics-title">Diagnóstico</h2>
+      <button type="button" id="copyAsbLog" class="copy-log-btn">Copiar log do ASB Player</button>
+      <p id="asbLogStatus" class="log-status"></p>
+    </section>
+    <footer class="popup-footer">ASB Auto Subs <span id="extensionVersion"></span></footer>
+  </main>
   <script src="../dist/popup.js"></script>
 </body>
-
 </html>
