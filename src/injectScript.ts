@@ -10,7 +10,7 @@ const contentScriptScope = globalThis as ContentScriptScope;
 // switch keeps the same document, so retain one message listener for it.
 if (!contentScriptScope.asbAutoSubsMessageListenerInstalled) {
   contentScriptScope.asbAutoSubsMessageListenerInstalled = true;
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.action) {
       case "alreadyDownloadedInfo":
         createToast("Subs already downloaded once", "#ff9318d3");

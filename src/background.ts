@@ -132,7 +132,6 @@ async function getAnilistIdAndEpisode(tabId: number, animeSiteKey: string) {
     action: "getAnimeMetaData",
     animeSiteKey,
   });
-  console.table(animeMetaData);
   if (
     !animeMetaData?.episode ||
     (!animeMetaData.anilistId && !animeMetaData.title)
@@ -259,11 +258,6 @@ type AsbPlayerLogEntry = {
   timestamp: string;
   level: "info" | "error";
   message: string;
-};
-
-type DownloadResult = {
-  asbPlayerLoaded: boolean;
-  name: string;
 };
 
 type AsbPlayerMedia = {
@@ -778,7 +772,6 @@ async function processNavigation(details: NavigationDetails) {
       return;
     }
     const { anilistId, episode } = idAndEp;
-    console.log(`anilistId: ${anilistId}, episode: ${episode}`);
     const episodeKey = `${anilistId}_${episode}`;
     const previousEpisodeKey = lastEpisodeKeys.get(details.tabId);
     if (previousEpisodeKey && previousEpisodeKey !== episodeKey) {

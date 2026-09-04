@@ -33,7 +33,6 @@
     "default_popup": "html/popup.html",
     "default_icon": "imgs/logo.png"
   },
-  "web_accessible_resources": [],
   "browser_specific_settings": {
     "gecko": {
       "id": "asbautosubs@godpepe7.com",
