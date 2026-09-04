@@ -1,10 +1,10 @@
 {
   "name": "asb-auto-subs",
-  "version": "0.0.14",
+  "version": "0.0.38",
   "description": "An extension to automatically download the subtitle file of the currently played anime which can be used with ASB Player to add the subtitles to the video.",
   "main": "src/popup.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsc --noEmit",
     "build": "webpack"
   },
   "repository": {
@@ -18,11 +18,10 @@
   },
   "homepage": "https://github.com/GodPepe7/asb-auto-subs#readme",
   "devDependencies": {
-    "@types/chrome": "^0.0.268",
-    "chrome-types": "^0.1.285",
-    "ts-loader": "^9.5.1",
-    "typescript": "^5.4.5",
-    "webpack": "^5.91.0",
-    "webpack-cli": "^5.1.4"
+    "@types/chrome": "^0.2.8",
+    "ts-loader": "^9.6.2",
+    "typescript": "^5.9.3",
+    "webpack": "^5.110.3",
+    "webpack-cli": "^7.2.3"
   }
 }

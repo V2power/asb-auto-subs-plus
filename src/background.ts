@@ -2,14 +2,23 @@ import { animeSites } from "./animeSites";
 import { AnimeMetaData, JimakuEntry, Subs, AnilistObject } from "./types";
 
 const lastDownloadedKeyName = "lastDownloadedKey";
-let lastProcessedUrl = "";
+const lastProcessedUrls = new Map<number, string>();
+const downloadsInProgress = new Set<string>();
+const supportedFileExtensions = new Set([
+  ".ass",
+  ".srt",
+  ".ssa",
+  ".vtt",
+  ".zip",
+  ".rar",
+  ".7z",
+]);
+const compressedFileExtensions = new Set([".zip", ".rar", ".7z"]);
 
 async function alreadyDownloaded(id: number, episode: number) {
   const key = `${id}_${episode}`;
   const result = await chrome.storage.local.get([key]);
-  if (Object.keys(result).length > 0) return true;
-  await chrome.storage.local.set({ [key]: true });
-  return false;
+  return Object.prototype.hasOwnProperty.call(result, key);
 }
 
 function getAnimeSiteKey(url: string) {
@@ -30,7 +39,11 @@ function getAnimeSiteKey(url: string) {
 }
 
 async function notifyError(tabId: number, error: string) {
-  await chrome.tabs.sendMessage(tabId, { action: "notifyError", error });
+  try {
+    await chrome.tabs.sendMessage(tabId, { action: "notifyError", error });
+  } catch (reason) {
+    console.warn("Could not notify the tab", reason);
+  }
 }
 
 async function fetchAnilistId(title: string) {
@@ -77,7 +90,12 @@ async function getAnilistIdAndEpisode(tabId: number, animeSiteKey: string) {
     animeSiteKey,
   });
   console.table(animeMetaData);
-  if (!animeMetaData) return null;
+  if (
+    !animeMetaData?.episode ||
+    (!animeMetaData.anilistId && !animeMetaData.title)
+  ) {
+    return null;
+  }
   episode = animeMetaData.episode;
   anilistId = animeMetaData.anilistId;
   if (!anilistId) {
@@ -89,8 +107,10 @@ async function getAnilistIdAndEpisode(tabId: number, animeSiteKey: string) {
 }
 
 async function fetchSubs(anilistId: number, episode: number) {
-  const localStorageAPIKey = await chrome.storage.sync.get("apiKey");
-  const jimakuAPIKey = localStorageAPIKey["apiKey"];
+  const { apiKey: jimakuAPIKey } = await chrome.storage.local.get("apiKey");
+  if (typeof jimakuAPIKey !== "string" || jimakuAPIKey.length === 0) {
+    return "Please configure your Jimaku API key";
+  }
   const BASE_URL = "https://jimaku.cc/api";
   const jimakuErrors = new Map([
     [400, "Something went wrong! This shouldn't happen"],
@@ -131,8 +151,8 @@ async function fetchSubs(anilistId: number, episode: number) {
         },
       },
     );
-    if (!searchResponse.ok) {
-      const error = jimakuErrors.get(searchResponse.status);
+    if (!filesResponse.ok) {
+      const error = jimakuErrors.get(filesResponse.status);
       return error ? error : "Something went wrong";
     }
     const subs: Subs[] = await filesResponse.json();
@@ -161,10 +181,58 @@ async function markMultipleAsDownloaded(filename: string, anilistId: number) {
   } else {
     episodes = episodeRange.split("~").map((episode) => parseInt(episode));
   }
-  for (let i = episodes[0]; i < episodes[1]; i++) {
+  if (!Number.isSafeInteger(episodes[0]) || !Number.isSafeInteger(episodes[1])) {
+    return;
+  }
+  for (let i = episodes[0]; i <= episodes[1]; i++) {
     const key = `${anilistId}_${i}`;
     await chrome.storage.local.set({ [key]: true });
   }
+}
+
+type DownloadableSub = {
+  url: string;
+  name: string;
+  extension: string;
+};
+
+function validateSub(sub: Subs): DownloadableSub | null {
+  let url: URL;
+  try {
+    url = new URL(sub.url);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "https:" ||
+    (url.hostname !== "jimaku.cc" && !url.hostname.endsWith(".jimaku.cc"))
+  ) {
+    return null;
+  }
+
+  const name = sub.name.replace(/\\/g, "/").split("/").pop()?.trim();
+  if (!name || name === "." || name === "..") return null;
+  const extension = name.slice(name.lastIndexOf(".")).toLowerCase();
+  if (!supportedFileExtensions.has(extension)) return null;
+  return { url: url.toString(), name, extension };
+}
+
+function startDownload(url: string, filename: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download(
+      { url, filename: `subs/${filename}`, saveAs: false },
+      (downloadId) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+        } else if (typeof downloadId !== "number") {
+          reject(new Error("The browser did not return a download ID"));
+        } else {
+          resolve(downloadId);
+        }
+      },
+    );
+  });
 }
 
 async function downloadSubs(anilistId: number, episode: number) {
@@ -173,63 +241,57 @@ async function downloadSubs(anilistId: number, episode: number) {
     return subs;
   }
 
-  const compressedFileEndings = [".zip", ".rar", ".7z"];
-  const nonCompressedSub = subs.find((sub) => {
-    for (let cfe of compressedFileEndings) {
-      if (sub.name.endsWith(cfe)) return false;
+  const validSubs = subs
+    .map(validateSub)
+    .filter((sub): sub is DownloadableSub => sub !== null);
+  const selectedSub =
+    validSubs.find((sub) => !compressedFileExtensions.has(sub.extension)) ??
+    validSubs[0];
+  if (!selectedSub) return "The API returned no supported subtitle file";
+
+  try {
+    const downloadId = await startDownload(selectedSub.url, selectedSub.name);
+    if (compressedFileExtensions.has(selectedSub.extension)) {
+      await markMultipleAsDownloaded(selectedSub.name, anilistId);
     }
-    return true;
-  });
-  const { url, name } = nonCompressedSub ? nonCompressedSub : subs[0];
-
-  chrome.downloads.download(
-    {
-      url,
-      filename: `subs/${name}`,
-      saveAs: false,
-    },
-    async (downloadId) => {
-      if (chrome.runtime.lastError) {
-        return chrome.runtime.lastError.message;
-      }
-      if (name.endsWith(".zip") || name.endsWith(".rar")) {
-        await markMultipleAsDownloaded(name, anilistId);
-      } else {
-        const key = `${anilistId}_${episode}`;
-        await chrome.storage.local.set({
-          [lastDownloadedKeyName]: key,
-          [key]: downloadId,
-        });
-      }
-    },
-  );
-  return;
-}
-
-async function removeLastDownloaded() {
-  const autoDelete = <boolean>(
-    (await chrome.storage.sync.get("autoDelete")).autoDelete
-  );
-  if (autoDelete)  {
-    let lastDownloadedKey: string;
-    lastDownloadedKey = (await chrome.storage.local.get(lastDownloadedKeyName))[lastDownloadedKeyName];
-    chrome.storage.local.get(lastDownloadedKey, async (result) => {
-      if (Object.keys(result).length === 0) return;
-      const downloadId = result[lastDownloadedKey];
-      if (downloadId === true) return;
-      await chrome.downloads.removeFile(downloadId);
-      await chrome.storage.local.remove(lastDownloadedKey);
+    const key = `${anilistId}_${episode}`;
+    await chrome.storage.local.set({
+      [lastDownloadedKeyName]: key,
+      [key]: downloadId,
     });
+  } catch (reason) {
+    console.error("Subtitle download failed", reason);
+    return "The subtitle download failed";
   }
 }
 
-chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+async function removeLastDownloaded() {
+  const autoDelete = (await chrome.storage.sync.get("autoDelete")).autoDelete;
+  if (autoDelete)  {
+    const lastDownloadedKey = (await chrome.storage.local.get(lastDownloadedKeyName))[lastDownloadedKeyName];
+    if (typeof lastDownloadedKey !== "string") return;
+    const result = await chrome.storage.local.get(lastDownloadedKey);
+    const downloadId = result[lastDownloadedKey];
+    if (typeof downloadId !== "number") return;
+    try {
+      await chrome.downloads.removeFile(downloadId);
+      await chrome.storage.local.remove(lastDownloadedKey);
+      await chrome.storage.local.remove(lastDownloadedKeyName);
+    } catch (reason) {
+      console.warn("Could not remove the previous subtitle", reason);
+    }
+  }
+}
+
+async function processNavigation(details: chrome.webNavigation.WebNavigationTransitionCallbackDetails) {
   if (details.frameId !== 0) return;
-  chrome.tabs.get(details.tabId, async (tab) => {
-    if (tab.url !== details.url || lastProcessedUrl === details.url) return;
+  try {
+    const tab = await chrome.tabs.get(details.tabId);
+    const url = tab.url ?? details.url;
+    if (lastProcessedUrls.get(details.tabId) === url) return;
     await removeLastDownloaded();
-    lastProcessedUrl = tab.url;
-    const animeSiteKey = getAnimeSiteKey(tab.url);
+    lastProcessedUrls.set(details.tabId, url);
+    const animeSiteKey = getAnimeSiteKey(url);
     if (!animeSiteKey) return;
     await chrome.scripting.insertCSS({
       target: { tabId: details.tabId },
@@ -240,9 +302,9 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
       files: ["dist/injectScript.js"],
     });
 
-    const apiKey = await chrome.storage.sync.get("apiKey");
-    if (Object.keys(apiKey).length === 0) {
-      notifyError(
+    const { apiKey } = await chrome.storage.local.get("apiKey");
+    if (typeof apiKey !== "string" || apiKey.length === 0) {
+      await notifyError(
         details.tabId,
         "Please get your jimaku API Key from https://jimaku.cc/ and set it by clicking the extension icon",
       );
@@ -262,14 +324,27 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
       episode,
     );
     if (hasAlreadyBeenDownloaded) {
-      chrome.tabs.sendMessage(details.tabId, {
+      await chrome.tabs.sendMessage(details.tabId, {
         action: "alreadyDownloadedInfo",
       });
       return;
     }
 
-    const error = await downloadSubs(anilistId, episode);
-    if (error) notifyError(details.tabId, error);
-    else chrome.tabs.sendMessage(details.tabId, { action: "notifySuccess" });
-  });
+    const downloadKey = `${anilistId}_${episode}`;
+    if (downloadsInProgress.has(downloadKey)) return;
+    downloadsInProgress.add(downloadKey);
+    try {
+      const error = await downloadSubs(anilistId, episode);
+      if (error) await notifyError(details.tabId, error);
+      else await chrome.tabs.sendMessage(details.tabId, { action: "notifySuccess" });
+    } finally {
+      downloadsInProgress.delete(downloadKey);
+    }
+  } catch (reason) {
+    console.error("Could not process navigation", reason);
+  }
+}
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  void processNavigation(details);
 });

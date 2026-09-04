@@ -7,6 +7,7 @@ const entryPoints = {
 };
 
 module.exports = {
+  mode: 'production',
   entry: entryPoints,
   module: {
     rules: [

@@ -14,10 +14,10 @@ jobs:
     runs-on: 'ubuntu-latest'
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js environment
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: 'npm'
@@ -42,7 +42,7 @@ jobs:
           mv firefox-manifest.json manifest.json
           zip -r asb-auto-subs-firefox dist html css imgs manifest.json
 
-      - uses: 'marvinpinto/action-automatic-releases@latest'
+      - uses: 'marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0' # v1.2.1
         with:
           repo_token: '${{ secrets.GITHUB_TOKEN }}'
           prerelease: false

@@ -22,6 +22,6 @@ To use the extension you have to do the following steps once:
 
 Prerequisite: Node 20 LTS installed
 
-1. `npm install`
+1. `npm ci`
 2. `npm run build`
 3. Replace manifest.json content with either firefox-manifest.json or chrome-manifest.json depending on what browser is used
