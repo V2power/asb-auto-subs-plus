@@ -2,9 +2,11 @@ import { animeSites } from "./animeSites";
 import { AnimeMetaData, JimakuEntry, Subs, AnilistObject } from "./types";
 
 const lastDownloadedKeyPrefix = "lastDownloaded:";
+const downloadedRangeKeyPrefix = "downloadedRange:";
 const lastProcessedUrls = new Map<number, string>();
 const lastEpisodeKeys = new Map<number, string>();
 const downloadsInProgress = new Set<string>();
+const pendingDownloadFilenames = new Map<string, string>();
 const supportedFileExtensions = new Set([
   ".ass",
   ".srt",
@@ -21,7 +23,7 @@ const asbPlayerLogKey = "asbPlayerLog";
 const maxAsbPlayerLogEntries = 30;
 
 async function alreadyDownloaded(id: number, episode: number) {
-  const key = `${id}_${episode}`;
+  const key = `${downloadedRangeKeyPrefix}${id}_${episode}`;
   const result = await chrome.storage.local.get([key]);
   return Object.prototype.hasOwnProperty.call(result, key);
 }
@@ -211,7 +213,7 @@ async function markMultipleAsDownloaded(filename: string, anilistId: number) {
     return;
   }
   for (let i = episodes[0]; i <= episodes[1]; i++) {
-    const key = `${anilistId}_${i}`;
+    const key = `${downloadedRangeKeyPrefix}${anilistId}_${i}`;
     await chrome.storage.local.set({ [key]: true });
   }
 }
@@ -386,7 +388,14 @@ function cleanSubtitleText(
 }
 
 function cleanCaptionBlocks(source: string, options: FormattingOptions) {
-  const blocks = source.trim().split(/\n{2,}/);
+  // A blank line can also occur inside the text of a cue. Only split when the
+  // next non-empty lines start a new timed cue; otherwise the text after the
+  // blank line would be treated as an orphan block and never cleaned/joined.
+  const blocks = source
+    .trim()
+    .split(
+      /\n{2,}(?=\s*(?:\d+\s*\n\s*)?(?:\d{2}:\d{2}:\d{2}[,.]\d{2,3}\s*-->))/,
+    );
   const cleaned = blocks.map((block) => {
     const lines = block.split("\n");
     const timingLine = lines.findIndex(
@@ -409,19 +418,60 @@ function cleanCaptionBlocks(source: string, options: FormattingOptions) {
 }
 
 function cleanAss(source: string, options: FormattingOptions) {
-  return source
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^(Dialogue:\s*(?:[^,]*,){9})(.*)$/i);
-      if (!match) return line;
-      const text = cleanLines(
-        match[2].split(/\\[Nn]/),
-        options,
-        options.joinSubtitleLines ? "" : "\\N",
-      );
-      return `${match[1]}${text}`;
-    })
-    .join("\r\n");
+  const cleaned: string[] = [];
+  let previousDialogue:
+    | { prefix: string; start: string; end: string; text: string }
+    | undefined;
+
+  const flushPreviousDialogue = () => {
+    if (!previousDialogue) return;
+    cleaned.push(`${previousDialogue.prefix}${previousDialogue.text}`);
+    previousDialogue = undefined;
+  };
+
+  for (const line of source.split("\n")) {
+    const match = line.match(/^(Dialogue:\s*(?:[^,]*,){9})(.*)$/i);
+    if (!match) {
+      flushPreviousDialogue();
+      cleaned.push(line);
+      continue;
+    }
+
+    const timing = match[1].match(/^Dialogue:\s*[^,]*,([^,]*),([^,]*),/i);
+    const text = cleanLines(
+      match[2].split(/\\[Nn]/),
+      options,
+      options.joinSubtitleLines ? "" : "\\N",
+    );
+
+    // Some ASS files represent wrapped caption text as consecutive Dialogue
+    // records with identical start/end times. Merge those records into one
+    // cue when the formatting option is enabled.
+    if (
+      options.joinSubtitleLines &&
+      timing &&
+      previousDialogue &&
+      previousDialogue.start === timing[1] &&
+      previousDialogue.end === timing[2]
+    ) {
+      previousDialogue.text += text;
+      continue;
+    }
+
+    flushPreviousDialogue();
+    if (timing) {
+      previousDialogue = {
+        prefix: match[1],
+        start: timing[1],
+        end: timing[2],
+        text,
+      };
+    } else {
+      cleaned.push(`${match[1]}${text}`);
+    }
+  }
+  flushPreviousDialogue();
+  return cleaned.join("\r\n");
 }
 
 function cleanLines(
@@ -480,20 +530,9 @@ async function downloadFormattedSubtitle(
   filename: string,
   content: string,
 ): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const mimeType = subtitleMimeType(filename);
-    const url = `data:${mimeType};base64,${textToBase64(content)}`;
-    chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-      } else if (typeof downloadId !== "number") {
-        reject(new Error("The browser did not return a download ID"));
-      } else {
-        resolve(downloadId);
-      }
-    });
-  });
+  const mimeType = subtitleMimeType(filename);
+  const url = `data:${mimeType};base64,${textToBase64(content)}`;
+  return startDownload(url, filename);
 }
 
 async function createAsbPlayerDiagnostic() {
@@ -550,13 +589,16 @@ function validateSub(sub: Subs): DownloadableSub | null {
 
 function startDownload(url: string, filename: string): Promise<number> {
   return new Promise((resolve, reject) => {
+    pendingDownloadFilenames.set(url, filename);
     chrome.downloads.download(
-      { url, filename, saveAs: false },
+      { url, filename, saveAs: false, conflictAction: "uniquify" },
       (downloadId) => {
         const error = chrome.runtime.lastError;
         if (error) {
+          pendingDownloadFilenames.delete(url);
           reject(new Error(error.message));
         } else if (typeof downloadId !== "number") {
+          pendingDownloadFilenames.delete(url);
           reject(new Error("The browser did not return a download ID"));
         } else {
           resolve(downloadId);
@@ -564,6 +606,33 @@ function startDownload(url: string, filename: string): Promise<number> {
       },
     );
   });
+}
+
+chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  const filename = pendingDownloadFilenames.get(downloadItem.url) ??
+    pendingDownloadFilenames.get(downloadItem.finalUrl);
+  if (!filename) {
+    suggest();
+    return;
+  }
+
+  pendingDownloadFilenames.delete(downloadItem.url);
+  pendingDownloadFilenames.delete(downloadItem.finalUrl);
+  suggest({ filename, conflictAction: "uniquify" });
+});
+
+async function downloadOriginalTextSubtitle(sub: DownloadableSub): Promise<number> {
+  const response = await fetch(sub.url);
+  if (!response.ok) {
+    throw new Error(`Could not read subtitle file (${response.status})`);
+  }
+
+  // Fetching the bytes ourselves prevents Jimaku's Content-Disposition header
+  // ("download") from replacing the filename supplied by its API.
+  const base64 = arrayBufferToBase64(await response.arrayBuffer());
+  const mimeType = subtitleMimeType(sub.name);
+  const url = `data:${mimeType};base64,${base64}`;
+  return startDownload(url, sub.name);
 }
 
 async function downloadSubs(tabId: number, anilistId: number, episode: number) {
@@ -588,7 +657,9 @@ async function downloadSubs(tabId: number, anilistId: number, episode: number) {
     );
     const downloadId = typeof formattedContent === "string"
       ? await downloadFormattedSubtitle(selectedSub.name, formattedContent)
-      : await startDownload(selectedSub.url, selectedSub.name);
+      : textSubtitleExtensions.has(selectedSub.extension)
+        ? await downloadOriginalTextSubtitle(selectedSub)
+        : await startDownload(selectedSub.url, selectedSub.name);
     if (compressedFileExtensions.has(selectedSub.extension)) {
       await markMultipleAsDownloaded(selectedSub.name, anilistId);
     }
