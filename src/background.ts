@@ -558,7 +558,7 @@ async function createAsbPlayerDiagnostic() {
     ? existingLog
     : [];
   const lines = [
-    `ASB Auto Subs ${chrome.runtime.getManifest().version}`,
+    `asb auto subs ${chrome.runtime.getManifest().version}`,
     `Generated: ${new Date().toISOString()}`,
   ];
   try {
