@@ -13,6 +13,9 @@ export type Subs = {
 
 export type JimakuEntry = {
   id: number;
+  name?: string;
+  english_name?: string;
+  japanese_name?: string;
 };
 
 export type AnilistObject = {

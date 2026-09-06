@@ -183,21 +183,26 @@ async function fetchSubs(anilistId: number, episode: number) {
     if (jimakuEntry.length === 0) {
       return `No subs found for this anime`;
     }
-    const id = jimakuEntry[0].id;
-    const filesResponse = await fetch(
-      BASE_URL + `/entries/${id}/files?episode=${episode}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `${jimakuAPIKey}`,
-        },
-      },
+    const results = await Promise.all(
+      jimakuEntry.map(async (entry) => {
+        const filesResponse = await fetch(
+          BASE_URL + `/entries/${entry.id}/files?episode=${episode}`,
+          {
+            method: "GET",
+            headers: { Authorization: `${jimakuAPIKey}` },
+          },
+        );
+        if (!filesResponse.ok) return [];
+        const subs: Subs[] = await filesResponse.json();
+        const entryName = entry.name ?? entry.english_name ??
+          entry.japanese_name ?? `Entry ${entry.id}`;
+        return subs.map((sub) => ({ ...sub, entryName }));
+      }),
     );
-    if (!filesResponse.ok) {
-      const error = jimakuErrors.get(filesResponse.status);
-      return error ? error : "Something went wrong";
-    }
-    const subs: Subs[] = await filesResponse.json();
+    const subs = results.reduce(
+      (all, entrySubs) => all.concat(entrySubs),
+      [] as Array<Subs & { entryName: string }>,
+    );
     if (subs.length === 0) {
       return `No subs for episode ${episode} could be found`;
     }
@@ -236,6 +241,10 @@ type DownloadableSub = {
   url: string;
   name: string;
   extension: string;
+};
+
+type SubtitleChoice = DownloadableSub & {
+  entryName: string;
 };
 
 type FormattingOptions = {
@@ -305,7 +314,7 @@ function wait(milliseconds: number) {
 }
 
 async function waitForAsbPlayerMedia() {
-  const attempts = 12;
+  const attempts = 15;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
@@ -335,7 +344,7 @@ async function waitForAsbPlayerMedia() {
       );
       if (attempt === attempts) throw new Error(details);
     }
-    await wait(1500);
+    await wait(700);
   }
   throw new Error("asbplayer did not find an active media item in time");
 }
@@ -636,27 +645,17 @@ async function downloadOriginalTextSubtitle(sub: DownloadableSub): Promise<numbe
     throw new Error(`Could not read subtitle file (${response.status})`);
   }
 
-  // Fetching the bytes ourselves prevents Jimaku's Content-Disposition header
-  // ("download") from replacing the filename supplied by its API.
   const base64 = arrayBufferToBase64(await response.arrayBuffer());
   const mimeType = subtitleMimeType(sub.name);
   const url = `data:${mimeType};base64,${base64}`;
   return startDownload(url, sub.name);
 }
 
-async function downloadSubs(tabId: number, anilistId: number, episode: number) {
-  const subs = await fetchSubs(anilistId, episode);
-  if (typeof subs === "string") {
-    return subs;
-  }
-
-  const validSubs = subs
-    .map(validateSub)
-    .filter((sub): sub is DownloadableSub => sub !== null);
-  const selectedSub =
-    validSubs.find((sub) => !compressedFileExtensions.has(sub.extension)) ??
-    validSubs[0];
-  if (!selectedSub) return "The API returned no supported subtitle file";
+async function downloadSub(
+  tabId: number,
+  anilistId: number,
+  selectedSub: DownloadableSub,
+) {
 
   try {
     const formattingOptions = await getFormattingOptions();
@@ -702,6 +701,33 @@ async function downloadSubs(tabId: number, anilistId: number, episode: number) {
     console.error("Subtitle download failed", reason);
     return "The subtitle download failed";
   }
+}
+
+async function chooseAndDownloadSubs(
+  tabId: number,
+  anilistId: number,
+  episode: number,
+) {
+  const subs = await fetchSubs(anilistId, episode);
+  if (typeof subs === "string") return subs;
+
+  const choices = subs
+    .map((sub) => {
+      const validSub = validateSub(sub);
+      return validSub ? { ...validSub, entryName: sub.entryName } : null;
+    })
+    .filter((sub): sub is SubtitleChoice => sub !== null);
+  if (choices.length === 0) return "The API returned no supported subtitle file";
+
+  if (choices.length === 1) return downloadSub(tabId, anilistId, choices[0]);
+
+  await chrome.tabs.sendMessage(tabId, {
+    action: "showSubtitlePicker",
+    choices,
+    anilistId,
+    episode,
+  });
+  return null;
 }
 
 async function removeLastDownloaded(tabId: number) {
@@ -793,7 +819,8 @@ async function processNavigation(details: NavigationDetails) {
     if (downloadsInProgress.has(downloadKey)) return;
     downloadsInProgress.add(downloadKey);
     try {
-      const result = await downloadSubs(details.tabId, anilistId, episode);
+      const result = await chooseAndDownloadSubs(details.tabId, anilistId, episode);
+      if (result === null) return;
       if (typeof result === "string") {
         await notifyError(details.tabId, result);
       } else {
@@ -828,13 +855,41 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void removeLastDownloaded(tabId);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.action !== "getAsbPlayerDiagnostic") return;
-  void createAsbPlayerDiagnostic()
-    .then((diagnostic) => sendResponse({ diagnostic }))
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "getAsbPlayerDiagnostic") {
+    void createAsbPlayerDiagnostic()
+      .then((diagnostic) => sendResponse({ diagnostic }))
+      .catch((reason) => {
+        const details = reason instanceof Error ? reason.message : String(reason);
+        sendResponse({ error: details });
+      });
+    return true;
+  }
+  if (message.action !== "downloadSubtitleChoice") return;
+
+  const tabId = sender.tab?.id;
+  const choice = validateSub(message.choice as Subs);
+  if (tabId === undefined || !choice ||
+    !Number.isSafeInteger(message.anilistId) ||
+    !Number.isSafeInteger(message.episode)) {
+    sendResponse({ error: "Invalid subtitle choice" });
+    return;
+  }
+  void downloadSub(tabId, message.anilistId, choice)
+    .then((result) => {
+      if (typeof result === "string") {
+        return notifyError(tabId, result).then(() => sendResponse({ error: result }));
+      }
+      const message = result.asbPlayerLoaded
+        ? `Downloaded and loaded ${result.name} into asbplayer`
+        : `Successfully downloaded ${result.name}`;
+      return chrome.tabs.sendMessage(tabId, { action: "notifySuccess", message })
+        .then(() => sendResponse({ ok: true }));
+    })
     .catch((reason) => {
-      const details = reason instanceof Error ? reason.message : String(reason);
-      sendResponse({ error: details });
+      console.error("Could not download selected subtitle", reason);
+      void notifyError(tabId, "The subtitle download failed");
+      sendResponse({ error: "The subtitle download failed" });
     });
   return true;
 });
