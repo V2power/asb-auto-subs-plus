@@ -5,6 +5,7 @@ const lastDownloadedKeyPrefix = "lastDownloaded:";
 const downloadedRangeKeyPrefix = "downloadedRange:";
 const lastProcessedUrls = new Map<number, string>();
 const lastEpisodeKeys = new Map<number, string>();
+const navigationRevisions = new Map<number, number>();
 const downloadsInProgress = new Set<string>();
 const pendingDownloadFilenames = new Map<string, string>();
 const supportedFileExtensions = new Set([
@@ -21,6 +22,7 @@ const textSubtitleExtensions = new Set([".ass", ".srt", ".ssa", ".vtt"]);
 const asbPlayerBaseUrl = "http://127.0.0.1:8766/asbplayer";
 const asbPlayerLogKey = "asbPlayerLog";
 const maxAsbPlayerLogEntries = 30;
+let asbPlayerLoadQueue = Promise.resolve();
 
 function getTrackedDownloadIds(value: unknown): number[] {
   // Older versions stored a single number. Accept it so existing installs can
@@ -313,9 +315,25 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForAsbPlayerMedia() {
+async function withAsbPlayerLoadLock<T>(callback: () => Promise<T>) {
+  const previousLoad = asbPlayerLoadQueue;
+  let releaseLoad = () => {};
+  asbPlayerLoadQueue = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+
+  await previousLoad;
+  try {
+    return await callback();
+  } finally {
+    releaseLoad();
+  }
+}
+
+async function waitForAsbPlayerMedia(isStillCurrent: () => boolean) {
   const attempts = 15;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (!isStillCurrent()) return false;
     try {
       const response = await fetch(`${asbPlayerBaseUrl}/bound-media`);
       if (!response.ok) {
@@ -334,7 +352,7 @@ async function waitForAsbPlayerMedia() {
           "info",
           `asbplayer media found: ${activeMedia[0].title ?? "untitled"}`,
         );
-        return;
+        return true;
       }
     } catch (reason) {
       const details = reason instanceof Error ? reason.message : String(reason);
@@ -352,6 +370,7 @@ async function waitForAsbPlayerMedia() {
 async function loadSubtitlesIntoAsbPlayer(
   sub: DownloadableSub,
   formattedContent?: string,
+  isStillCurrent: () => boolean = () => true,
 ) {
   let base64: string;
   if (typeof formattedContent === "string") {
@@ -363,22 +382,28 @@ async function loadSubtitlesIntoAsbPlayer(
     }
     base64 = arrayBufferToBase64(await subtitleResponse.arrayBuffer());
   }
-  await waitForAsbPlayerMedia();
-  const response = await fetch(`${asbPlayerBaseUrl}/load-subtitles`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      files: [{ name: sub.name, base64 }],
-    }),
+  return withAsbPlayerLoadLock(async () => {
+    if (!isStillCurrent()) return false;
+    const mediaReady = await waitForAsbPlayerMedia(isStillCurrent);
+    if (!mediaReady || !isStillCurrent()) return false;
+
+    const response = await fetch(`${asbPlayerBaseUrl}/load-subtitles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        files: [{ name: sub.name, base64 }],
+      }),
+    });
+    const responseText = await response.text();
+    await appendAsbPlayerLog(
+      "info",
+      `asbplayer load-subtitles response HTTP ${response.status}: ${responseText.slice(0, 500) || "(empty response)"}`,
+    );
+    if (!response.ok) {
+      throw new Error(`asbplayer returned HTTP ${response.status}`);
+    }
+    return true;
   });
-  const responseText = await response.text();
-  await appendAsbPlayerLog(
-    "info",
-    `asbplayer load-subtitles response HTTP ${response.status}: ${responseText.slice(0, 500) || "(empty response)"}`,
-  );
-  if (!response.ok) {
-    throw new Error(`asbplayer returned HTTP ${response.status}`);
-  }
 }
 
 async function getFormattingOptions(): Promise<FormattingOptions | null> {
@@ -655,6 +680,7 @@ async function downloadSub(
   tabId: number,
   anilistId: number,
   selectedSub: DownloadableSub,
+  isStillCurrent: () => boolean = () => true,
 ) {
 
   try {
@@ -685,7 +711,18 @@ async function downloadSub(
       return message;
     }
     try {
-      await loadSubtitlesIntoAsbPlayer(selectedSub, formattedContent ?? undefined);
+      const loaded = await loadSubtitlesIntoAsbPlayer(
+        selectedSub,
+        formattedContent ?? undefined,
+        isStillCurrent,
+      );
+      if (!loaded) {
+        await appendAsbPlayerLog(
+          "info",
+          `Skipped stale asbplayer load: ${selectedSub.name}`,
+        );
+        return { asbPlayerLoaded: false, name: selectedSub.name };
+      }
       await appendAsbPlayerLog(
         "info",
         `Loaded ${selectedSub.name} into asbplayer`,
@@ -707,8 +744,10 @@ async function chooseAndDownloadSubs(
   tabId: number,
   anilistId: number,
   episode: number,
+  isStillCurrent: () => boolean,
 ) {
   const subs = await fetchSubs(anilistId, episode);
+  if (!isStillCurrent()) return null;
   if (typeof subs === "string") return subs;
 
   const choices = subs
@@ -719,7 +758,9 @@ async function chooseAndDownloadSubs(
     .filter((sub): sub is SubtitleChoice => sub !== null);
   if (choices.length === 0) return "The API returned no supported subtitle file";
 
-  if (choices.length === 1) return downloadSub(tabId, anilistId, choices[0]);
+  if (choices.length === 1) {
+    return downloadSub(tabId, anilistId, choices[0], isStillCurrent);
+  }
 
   await chrome.tabs.sendMessage(tabId, {
     action: "showSubtitlePicker",
@@ -764,6 +805,13 @@ type NavigationDetails = {
   url: string;
 };
 
+function isMissingTabError(reason: unknown) {
+  return (
+    reason instanceof Error &&
+    /\bNo tab with id\b/i.test(reason.message)
+  );
+}
+
 async function processNavigation(details: NavigationDetails) {
   if (details.frameId !== 0) return;
   try {
@@ -771,6 +819,10 @@ async function processNavigation(details: NavigationDetails) {
     const url = tab.url ?? details.url;
     if (lastProcessedUrls.get(details.tabId) === url) return;
     lastProcessedUrls.set(details.tabId, url);
+    const navigationRevision = (navigationRevisions.get(details.tabId) ?? 0) + 1;
+    navigationRevisions.set(details.tabId, navigationRevision);
+    const isStillCurrent = () =>
+      navigationRevisions.get(details.tabId) === navigationRevision;
     const animeSiteKey = getAnimeSiteKey(url);
     if (!animeSiteKey) return;
     await chrome.scripting.insertCSS({
@@ -792,6 +844,7 @@ async function processNavigation(details: NavigationDetails) {
     }
 
     const idAndEp = await getAnilistIdAndEpisode(details.tabId, animeSiteKey);
+    if (!isStillCurrent()) return;
     if (!idAndEp) return;
     if (typeof idAndEp === "string") {
       notifyError(details.tabId, idAndEp);
@@ -800,14 +853,16 @@ async function processNavigation(details: NavigationDetails) {
     const { anilistId, episode } = idAndEp;
     const episodeKey = `${anilistId}_${episode}`;
     const previousEpisodeKey = lastEpisodeKeys.get(details.tabId);
+    lastEpisodeKeys.set(details.tabId, episodeKey);
     if (previousEpisodeKey && previousEpisodeKey !== episodeKey) {
       await removeLastDownloaded(details.tabId);
     }
-    lastEpisodeKeys.set(details.tabId, episodeKey);
+    if (!isStillCurrent()) return;
     const hasAlreadyBeenDownloaded = await alreadyDownloaded(
       anilistId,
       episode,
     );
+    if (!isStillCurrent()) return;
     if (hasAlreadyBeenDownloaded) {
       await chrome.tabs.sendMessage(details.tabId, {
         action: "alreadyDownloadedInfo",
@@ -819,7 +874,13 @@ async function processNavigation(details: NavigationDetails) {
     if (downloadsInProgress.has(downloadKey)) return;
     downloadsInProgress.add(downloadKey);
     try {
-      const result = await chooseAndDownloadSubs(details.tabId, anilistId, episode);
+      const result = await chooseAndDownloadSubs(
+        details.tabId,
+        anilistId,
+        episode,
+        isStillCurrent,
+      );
+      if (!isStillCurrent()) return;
       if (result === null) return;
       if (typeof result === "string") {
         await notifyError(details.tabId, result);
@@ -836,6 +897,14 @@ async function processNavigation(details: NavigationDetails) {
       downloadsInProgress.delete(downloadKey);
     }
   } catch (reason) {
+    // Navigation events can remain queued after their tab has been closed.
+    // This is an expected cancellation, not a navigation failure.
+    if (isMissingTabError(reason)) {
+      lastProcessedUrls.delete(details.tabId);
+      lastEpisodeKeys.delete(details.tabId);
+      navigationRevisions.delete(details.tabId);
+      return;
+    }
     console.error("Could not process navigation", reason);
   }
 }
@@ -852,6 +921,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   lastProcessedUrls.delete(tabId);
   lastEpisodeKeys.delete(tabId);
+  navigationRevisions.delete(tabId);
   void removeLastDownloaded(tabId);
 });
 
@@ -875,7 +945,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ error: "Invalid subtitle choice" });
     return;
   }
-  void downloadSub(tabId, message.anilistId, choice)
+  const episodeKey = `${message.anilistId}_${message.episode}`;
+  const isStillCurrent = () => lastEpisodeKeys.get(tabId) === episodeKey;
+  void downloadSub(tabId, message.anilistId, choice, isStillCurrent)
     .then((result) => {
       if (typeof result === "string") {
         return notifyError(tabId, result).then(() => sendResponse({ error: result }));
