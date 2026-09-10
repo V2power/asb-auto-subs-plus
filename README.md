@@ -42,7 +42,8 @@ Configuration even if automatic formatting is disabled. Files must use UTF-8
 or UTF-16 with a BOM, with a maximum of 20 MB per file. Unsupported encodings
 produce an error instead of silently corrupting the text.
 
-Copies are saved as `name.f.ext` in the browser's download directory;
+Copies retain their original filenames (no added suffix). Local files are saved
+in `Anime name/` under the browser's download directory;
 original files are preserved. Keep the picker window (or popup for local files) open until the batch finishes.
 Each file has its own result, so a failure does not stop the remaining files.
 The browser's download list shows final download completion or disk errors.
@@ -64,6 +65,11 @@ Provider/format groups start collapsed. Click their heading to show episodes;
 the separate checkbox selects the whole group without expanding it. Amazon and
 Netflix tags inside filenames are recognized as streaming providers.
 Selecting two or more Jimaku files saves the batch under `Anime name/` in Downloads.
-Single Jimaku downloads and local files keep their existing destination. A pending
+Single Jimaku downloads stay in the download directory. Local files, whether one
+or several, are saved in `Anime name/`. Existing files are preserved using
+the browser's automatic filename disambiguation. A pending
 file retried after a batch pause keeps its batch folder. Invalid folder characters
 are replaced to keep the anime title a single directory name.
+
+For local subtitles, enter the anime name in the folder field before selecting files.
+All files in that selection are saved under that anime folder, without an added suffix.

@@ -1090,6 +1090,9 @@ async function handleManualRequest(message: any) {
       return sub && textSubtitleExtensions.has(sub.extension);
     }) };
   }
+  if (message.action === "manualLocal" && (typeof message.animeName !== "string" || !message.animeName.trim())) {
+    throw new Error("Informe o nome do anime / Enter the anime name");
+  }
   let name: string;
   let bytes: Uint8Array;
   const maxBytes = 20 * 1024 * 1024;
@@ -1108,10 +1111,9 @@ async function handleManualRequest(message: any) {
   }
   if (bytes.byteLength > maxBytes) throw new Error("Maximum 20 MB");
   const content = cleanSubtitleText(decodeManualSubtitle(bytes), name, await manualFormattingOptions());
-  const formattedName = name.replace(/\.(srt|ass|ssa|vtt)$/i, ".f.$1");
-  const folder = message.action === "manualDownload" && typeof message.batchFolder === "string"
-    ? safeAnimeFolder(message.batchFolder) : undefined;
-  const filename = folder ? `${folder}/${formattedName}` : formattedName;
+  const folder = message.action === "manualLocal" ? safeAnimeFolder(message.animeName)
+    : typeof message.batchFolder === "string" ? safeAnimeFolder(message.batchFolder) : undefined;
+  const filename = folder ? `${folder}/${name}` : name;
   const downloadId = await downloadFormattedSubtitle(filename, content);
   return { downloadId, filename };
 }

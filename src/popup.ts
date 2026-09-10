@@ -3,6 +3,9 @@ type Language = "en" | "pt-BR";
 
 const translations: Record<Language, Record<string, string>> = {
   en: {
+    localAnimeLabel: "Anime name (folder)",
+    localAnimePlaceholder: "e.g. Yuru Camp",
+    localAnimeRequired: "Enter the anime name before selecting subtitles.",
     managerTitle: "Choose your subtitles",
     groupHelp: "Select individual files or an entire provider/format. Groups are inferred from filenames; review the files before downloading.",
     unknownProvider: "Unidentified provider",
@@ -21,7 +24,7 @@ const translations: Record<Language, Record<string, string>> = {
     selectFiles: "Select all files",
     downloadSelected: "Download formatted subtitles",
     localTitle: "Subtitles from your computer",
-    manualHelp: "Applies the formatting options in Configuration, even when automatic formatting is off. Saves .f copies in Downloads and preserves originals. SRT, ASS, SSA and VTT in UTF-8 or UTF-16 with BOM. Up to 20 MB per file. Keep this window open until the batch finishes.",
+    manualHelp: "Applies the formatting options in Configuration, even when automatic formatting is off. Keeps original filenames. Enter the anime name to save local files in its folder in Downloads. Jimaku batches use the anime folder. Original files are preserved. SRT, ASS, SSA and VTT in UTF-8 or UTF-16 with BOM. Up to 20 MB per file. Keep this window open until the batch finishes.",
     chooseFiles: "Select one or more subtitles",
     loading: "Loading…",
     noAnime: "No anime found. Try another name.",
@@ -59,6 +62,9 @@ const translations: Record<Language, Record<string, string>> = {
     copyFailed: "Copy failed: ",
   },
   "pt-BR": {
+    localAnimeLabel: "Nome do anime (pasta)",
+    localAnimePlaceholder: "Ex.: Yuru Camp",
+    localAnimeRequired: "Informe o nome do anime antes de selecionar as legendas.",
     managerTitle: "Escolha suas legendas",
     groupHelp: "Selecione arquivos individualmente ou marque um provider/formato inteiro. Os grupos são inferidos dos nomes; confira os arquivos antes de baixar.",
     unknownProvider: "Provider não identificado",
@@ -77,7 +83,7 @@ const translations: Record<Language, Record<string, string>> = {
     selectFiles: "Selecionar todos os arquivos",
     downloadSelected: "Baixar legendas formatadas",
     localTitle: "Legendas do computador",
-    manualHelp: "Aplica as opções de formatação das Configurações, mesmo com a formatação automática desligada. Salva cópias .f em Downloads e preserva os originais. SRT, ASS, SSA e VTT em UTF-8 ou UTF-16 com BOM. Até 20 MB por arquivo. Mantenha esta janela aberta até concluir o lote.",
+    manualHelp: "Aplica as opções de formatação das Configurações, mesmo com a formatação automática desligada. Mantém os nomes dos arquivos. Informe o nome do anime para salvar arquivos locais na pasta dele em Downloads. Lotes do Jimaku usam a pasta do anime. Os originais são preservados. SRT, ASS, SSA e VTT em UTF-8 ou UTF-16 com BOM. Até 20 MB por arquivo. Mantenha esta janela aberta até concluir o lote.",
     chooseFiles: "Selecionar uma ou várias legendas",
     loading: "Carregando…",
     noAnime: "Nenhum anime encontrado. Tente outro nome.",
@@ -120,6 +126,8 @@ let currentLanguage: Language = "en";
 const translate = (key: string) => translations[currentLanguage][key] ?? key;
 
 function applyTranslations() {
+  const pageTitle = new URLSearchParams(location.search).get("manager") === "1" ? "managerTitle" : "home";
+  document.title = `${translate(pageTitle)} — asbautosubs+`;
   document.documentElement.lang = currentLanguage;
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => {
     element.textContent = translate(element.dataset.i18n!);
@@ -553,7 +561,20 @@ element("downloadSelected").addEventListener("click", () => {
   } })));
 });
 
+element("localFiles").addEventListener("click", (event) => {
+  if (!element<HTMLInputElement>("localAnimeName").value.trim()) {
+    event.preventDefault();
+    element("manualStatus").textContent = translate("localAnimeRequired");
+    element<HTMLInputElement>("localAnimeName").focus();
+  }
+});
 element("localFiles").addEventListener("change", () => {
+  const animeName = element<HTMLInputElement>("localAnimeName").value.trim();
+  if (!animeName) {
+    element("manualStatus").textContent = translate("localAnimeRequired");
+    element<HTMLInputElement>("localFiles").value = "";
+    return;
+  }
   const files = Array.from(element<HTMLInputElement>("localFiles").files ?? []);
   void runManualBatch(files.map((file) => ({ name: file.name, run: async () => {
     if (file.size > 20 * 1024 * 1024) throw new Error("Maximum 20 MB");
@@ -562,7 +583,7 @@ element("localFiles").addEventListener("change", () => {
     for (let offset = 0; offset < bytes.length; offset += 8192) {
       binary += String.fromCharCode(...Array.from(bytes.subarray(offset, offset + 8192)));
     }
-    return manualRequest({ action: "manualLocal", name: file.name, base64: btoa(binary) });
+    return manualRequest({ action: "manualLocal", animeName, name: file.name, base64: btoa(binary) });
   } })));
 });
 

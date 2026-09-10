@@ -63,3 +63,5 @@ body.manager-mode { width: auto; min-width: 360px; }
 .provider-toggle::before { content: "▸"; width: 12px; flex-shrink: 0; }
 .provider-toggle[aria-expanded="true"]::before { content: "▾"; }
 .provider-toggle:hover { color: #fff; }
+
+#localAnimeName { width: 100%; padding: 10px; border: 1px solid #3b3d4b; border-radius: 8px; background: #1b1d25; color: white; font: inherit; }

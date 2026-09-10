@@ -30,12 +30,13 @@ function setup(settings = {}) {
   return { context, downloads, writes, requests, listeners };
 }
 const source = '1\n00:00:01,000 --> 00:00:02,000\n（太郎）漢字(かんじ)\n次\n';
-const local = (content = source) => ({ action: 'manualLocal', name: 'episode.srt', base64: Buffer.from(content).toString('base64') });
+const local = (content = source) => ({ action: 'manualLocal', animeName: 'Yuru Camp', name: 'episode.srt', base64: Buffer.from(content).toString('base64') });
 
 test('manual formatting preserves timestamps, cleans text and never tracks episode downloads', async () => {
   const { context, downloads, writes } = setup({ formatSubtitles: false, autoDelete: true });
   await context.handleManualRequest(local());
-  assert.equal(downloads[0].filename, 'episode.f.srt');
+  assert.equal(downloads[0].filename, 'Yuru Camp/episode.srt');
+  assert.equal(downloads[0].conflictAction, 'uniquify');
   const text = Buffer.from(downloads[0].url.split(',')[1], 'base64').toString('utf8');
   assert.match(text, /00:00:01,000 --> 00:00:02,000/);
   assert.match(text, /漢字次/);
@@ -98,7 +99,7 @@ test('extension picker window can call manual handlers', async () => {
   const response = await new Promise(resolve => {
     assert.equal(listeners[1](local(), { id: 'test', tab: { id: 2 }, url: 'chrome-extension://test/html/popup.html?manager=1' }, resolve), true);
   });
-  assert.equal(response.filename, 'episode.f.srt');
+  assert.equal(response.filename, 'Yuru Camp/episode.srt');
 });
 test('providers distinguish Judas and Sergey-Commie and keep formats separate', () => {
   const scope = { exports: {} };
@@ -112,16 +113,16 @@ test('providers distinguish Judas and Sergey-Commie and keep formats separate', 
   assert.equal(scope.exports.subtitleFormat('[Judas] Haikyu!! S01E01.ja.srt'), 'SRT');
 });
 
-test('only manual Jimaku batches use the anime folder', async () => {
+test('local files use their folder and only Jimaku batches use the anime folder', async () => {
   const { context, downloads, writes } = setup();
   context.fetch = async () => new Response(source);
   const file = { name: 'episode.srt', url: 'https://jimaku.cc/entry/1/download/episode.srt' };
   await context.handleManualRequest({ action: 'manualDownload', file, batchFolder: 'ゆるキャン△' });
-  assert.equal(downloads[0].filename, 'ゆるキャン△/episode.f.srt');
+  assert.equal(downloads[0].filename, 'ゆるキャン△/episode.srt');
   await context.handleManualRequest({ action: 'manualDownload', file });
-  assert.equal(downloads[1].filename, 'episode.f.srt');
+  assert.equal(downloads[1].filename, 'episode.srt');
   await context.handleManualRequest({ ...local(), batchFolder: 'ignored' });
-  assert.equal(downloads[2].filename, 'episode.f.srt');
+  assert.equal(downloads[2].filename, 'Yuru Camp/episode.srt');
   assert.equal(writes.length, 0);
 });
 test('anime folder stays a single safe path component', () => {
@@ -131,4 +132,12 @@ test('anime folder stays a single safe path component', () => {
   assert.equal(context.safeAnimeFolder('..'), 'Anime');
   assert.equal(context.safeAnimeFolder('CON'), '_CON');
   assert.equal(context.safeAnimeFolder('Anime. '), 'Anime');
+});
+
+test('local subtitles require an anime name before downloading', async () => {
+  const { context, downloads } = setup();
+  await assert.rejects(context.handleManualRequest({ ...local(), animeName: '   ' }), /anime/);
+  assert.equal(downloads.length, 0);
+  await context.handleManualRequest({ ...local(), animeName: 'ゆるキャン△: Season 1' });
+  assert.equal(downloads[0].filename, 'ゆるキャン△_ Season 1/episode.srt');
 });

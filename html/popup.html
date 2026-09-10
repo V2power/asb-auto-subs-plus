@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <title>asbautosubs+</title>
   <link rel="stylesheet" href="../css/popup.css">
 </head>
 <body>
@@ -39,7 +40,9 @@
       </section>
       <section class="local-section">
         <h2 data-i18n="localTitle">Subtitles from your computer</h2>
-        <p class="manual-help" data-i18n="manualHelp">Uses the formatting options in Configuration. Saves new .f copies in Downloads; original files are preserved. UTF-8, UTF-16 with BOM, SRT, ASS, SSA and VTT.</p>
+        <p class="manual-help" data-i18n="manualHelp">Uses the formatting options in Configuration. Keeps original filenames. Local files are saved in a folder named after the anime; original files are preserved. UTF-8, UTF-16 with BOM, SRT, ASS, SSA and VTT.</p>
+        <label for="localAnimeName" class="file-label" data-i18n="localAnimeLabel">Anime name (folder)</label>
+        <input id="localAnimeName" type="text" maxlength="100" data-i18n-placeholder="localAnimePlaceholder" placeholder="e.g. Yuru Camp" autocomplete="off">
         <label for="localFiles" class="file-label" data-i18n="chooseFiles">Select one or more subtitles</label>
         <input id="localFiles" type="file" accept=".srt,.ass,.ssa,.vtt" multiple>
       </section>
