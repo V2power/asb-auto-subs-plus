@@ -16,6 +16,38 @@
         </select>
       </label>
     </header>
+    <nav class="tabs" aria-label="Navigation">
+      <button type="button" id="homeTab" aria-pressed="true" data-i18n="home">Subtitles</button>
+      <button type="button" id="settingsTab" aria-pressed="false" data-i18n="configuration">Configuration</button>
+    </nav>
+    <section id="homePanel">
+      <p id="pickerHelp" class="manual-help" hidden data-i18n="groupHelp"></p>
+      <form id="searchForm">
+        <label for="animeQuery" data-i18n="searchLabel">Anime name</label>
+        <div class="input-row"><input id="animeQuery" required maxlength="200" autocomplete="off"><button class="set-btn" data-i18n="search">Search</button></div>
+      </form>
+      <p id="searchStatus" class="manual-status" role="status"></p>
+      <div id="animeResults" class="results"></div>
+      <section id="filePanel" hidden>
+        <h2 id="selectedAnime"></h2>
+        <label class="format-option"><span data-i18n="selectFiles">Select all files</span><input id="selectFiles" type="checkbox"></label>
+        <div id="subtitleResults" class="results"></div>
+        <div class="download-toolbar"><span id="selectionCount"></span>
+        <button id="downloadSelected" class="copy-log-btn" disabled data-i18n="downloadSelected">Download formatted subtitles</button>
+      <p id="rateNotice" class="manual-help" role="status" data-i18n="rateUnknown"></p>
+      <p id="batchProgress" class="manual-help" role="status"></p></div>
+      </section>
+      <section class="local-section">
+        <h2 data-i18n="localTitle">Subtitles from your computer</h2>
+        <p class="manual-help" data-i18n="manualHelp">Uses the formatting options in Configuration. Saves new .f copies in Downloads; original files are preserved. UTF-8, UTF-16 with BOM, SRT, ASS, SSA and VTT.</p>
+        <label for="localFiles" class="file-label" data-i18n="chooseFiles">Select one or more subtitles</label>
+        <input id="localFiles" type="file" accept=".srt,.ass,.ssa,.vtt" multiple>
+      </section>
+      <button id="stopBatch" class="copy-log-btn" hidden data-i18n="stopBatch"></button>
+      <p id="manualStatus" class="manual-status" role="status"></p>
+      <ul id="jobResults" class="job-results"></ul>
+    </section>
+    <section id="settingsPanel" hidden>
     <form id="apiKeyForm">
       <label for="apiKey" data-i18n="apiKeyLabel">Jimaku API key</label>
       <div class="input-row">
@@ -51,6 +83,7 @@
       <h2 id="diagnostics-title" data-i18n="diagnostics">Diagnostics</h2>
       <button type="button" id="copyAsbLog" class="copy-log-btn" data-i18n="copyLog">Copy asbplayer log</button>
       <p id="asbLogStatus" class="log-status"></p>
+    </section>
     </section>
     <footer class="popup-footer">asb auto subs <span id="extensionVersion"></span></footer>
   </main>

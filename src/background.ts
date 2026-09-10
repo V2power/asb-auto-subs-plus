@@ -177,6 +177,7 @@ async function fetchSubs(anilistId: number, episode: number) {
       },
     );
 
+    await readJimakuRate(searchResponse);
     if (!searchResponse.ok) {
       const error = jimakuErrors.get(searchResponse.status);
       return error ? error : "Something went wrong";
@@ -194,6 +195,7 @@ async function fetchSubs(anilistId: number, episode: number) {
             headers: { Authorization: `${jimakuAPIKey}` },
           },
         );
+        await readJimakuRate(filesResponse);
         if (!filesResponse.ok) return [];
         const subs: Subs[] = await filesResponse.json();
         const entryName = entry.name ?? entry.english_name ??
@@ -963,5 +965,163 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void notifyError(tabId, "The subtitle download failed");
       sendResponse({ error: "The subtitle download failed" });
     });
+  return true;
+});
+
+// Manual operations never participate in per-tab episode tracking or auto-delete.
+// Header meanings: https://jimaku.cc/api/docs#description/rate-limits
+let jimakuRate: { remaining?: number; resetAt?: number; blockedUntil?: number } = {};
+let manualRequestQueue: Promise<unknown> = Promise.resolve();
+let lastManualRequestAt = 0;
+const manualCachePending = new Map<string, Promise<unknown>>();
+const manualCache = new Map<string, { expires: number; value: unknown }>();
+
+function rateLimitError(retryAt: number) {
+  return Object.assign(new Error(`Jimaku: limite de requisições / rate limit. Aguarde até / wait until ${new Date(retryAt).toLocaleTimeString()}.`), { retryAt });
+}
+
+async function readJimakuRate(response: Response) {
+  const header = (name: string) => {
+    const raw = response.headers?.get(name);
+    return raw != null && raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : undefined;
+  };
+  const remaining = header("x-ratelimit-remaining");
+  const resetAfter = header("x-ratelimit-reset-after");
+  const reset = header("x-ratelimit-reset");
+  const retry = response.headers?.get("retry-after");
+  const retryAt = retry ? (Number.isFinite(Number(retry)) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : undefined;
+  const resetAt = resetAfter !== undefined ? Date.now() + resetAfter * 1000 : reset !== undefined ? reset * 1000 : undefined;
+  if (remaining !== undefined) jimakuRate = { ...jimakuRate, remaining, resetAt };
+  if (response.status === 429 || remaining === 0) {
+    jimakuRate.blockedUntil = Math.max(jimakuRate.blockedUntil ?? 0, resetAt ?? 0, retryAt && Number.isFinite(retryAt) ? retryAt : 0, Date.now() + 1000);
+    if (resetAt === undefined && !retryAt) jimakuRate.blockedUntil = Date.now() + 60000;
+  }
+  if (remaining !== undefined || response.status === 429) {
+    await chrome.storage.local.set({ manualJimakuRate: jimakuRate });
+  }
+}
+
+function manualRateStatus() {
+  if (jimakuRate.resetAt && jimakuRate.resetAt <= Date.now()) {
+    return { ...jimakuRate, remaining: undefined };
+  }
+  return jimakuRate;
+}
+
+async function manualJimakuFetch(url: string, init?: RequestInit): Promise<Response> {
+  const operation = manualRequestQueue.then(async () => {
+    const stored = await chrome.storage.local.get("manualJimakuRate");
+    if (stored.manualJimakuRate) jimakuRate = stored.manualJimakuRate;
+    if ((jimakuRate.blockedUntil ?? 0) > Date.now()) throw rateLimitError(jimakuRate.blockedUntil!);
+    const delay = Math.max(0, lastManualRequestAt + 1200 - Date.now());
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    lastManualRequestAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      await readJimakuRate(response);
+      if (response.status === 429) throw rateLimitError(jimakuRate.blockedUntil!);
+      if (!response.ok) throw new Error(`Jimaku HTTP ${response.status}`);
+      // Consume inside the timeout; callers still use the standard Response API.
+      const bytes = await response.arrayBuffer();
+      return new Response(bytes, { status: response.status, headers: response.headers });
+    } finally { clearTimeout(timeout); }
+  });
+  manualRequestQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+async function manualJimakuRequest(path: string) {
+  const key = await getApiKey();
+  if (!key) throw new Error("Configure a chave Jimaku / Configure your Jimaku API key");
+  const cacheKey = `${key}:${path}`;
+  const cached = manualCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const pending = manualCachePending.get(cacheKey);
+  if (pending) return pending;
+  const request = (async () => {
+    const response = await manualJimakuFetch(`https://jimaku.cc/api${path}`, { headers: { Authorization: key } });
+    const value = await response.json();
+    if (manualCache.size >= 30) manualCache.delete(manualCache.keys().next().value!);
+    manualCache.set(cacheKey, { expires: Date.now() + 5 * 60000, value });
+    return value;
+  })();
+  manualCachePending.set(cacheKey, request);
+  try { return await request; }
+  finally { manualCachePending.delete(cacheKey); }
+}
+
+async function manualFormattingOptions(): Promise<FormattingOptions> {
+  const settings = await chrome.storage.sync.get(formattingOptionIds);
+  return formattingOptionIds.reduce((options, key) => {
+    options[key] = settings[key] !== false;
+    return options;
+  }, {} as FormattingOptions);
+}
+
+function decodeManualSubtitle(bytes: Uint8Array): string {
+  const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le"
+    : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : "utf-8";
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("Codificação incompatível: converta para UTF-8 / Unsupported encoding: convert to UTF-8");
+  }
+}
+
+function safeAnimeFolder(title: string): string {
+  const cleaned = title.normalize("NFC").replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, "_")
+    .trim().slice(0, 100).replace(/[. ]+$/g, "");
+  if (!cleaned) return "Anime";
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+
+async function handleManualRequest(message: any) {
+  if (message.action === "manualSearch") {
+    if (typeof message.query !== "string" || !message.query.trim() || message.query.length > 200) throw new Error("Invalid search");
+    return { entries: await manualJimakuRequest(`/entries/search?query=${encodeURIComponent(message.query.trim())}&anime=true`) };
+  }
+  if (message.action === "manualFiles") {
+    if (!Number.isSafeInteger(message.entryId) || message.entryId <= 0) throw new Error("Invalid entry");
+    const files: Subs[] = await manualJimakuRequest(`/entries/${message.entryId}/files`);
+    return { files: files.filter((file) => {
+      const sub = validateSub(file);
+      return sub && textSubtitleExtensions.has(sub.extension);
+    }) };
+  }
+  let name: string;
+  let bytes: Uint8Array;
+  const maxBytes = 20 * 1024 * 1024;
+  if (message.action === "manualDownload") {
+    if (!message.file || typeof message.file.name !== "string") throw new Error("Invalid file");
+    const sub = validateSub(message.file);
+    if (!sub || !textSubtitleExtensions.has(sub.extension)) throw new Error("Unsupported subtitle");
+    const response = await manualJimakuFetch(sub.url);
+    bytes = new Uint8Array(await response.arrayBuffer());
+    name = sub.name;
+  } else {
+    if (typeof message.name !== "string" || typeof message.base64 !== "string" || message.base64.length > Math.ceil(maxBytes / 3) * 4) throw new Error("Invalid file / Maximum 20 MB");
+    name = message.name.replace(/\\/g, "/").split("/").pop()!;
+    if (!/\.(srt|ass|ssa|vtt)$/i.test(name)) throw new Error("Unsupported subtitle");
+    bytes = Uint8Array.from(atob(message.base64), (char) => char.charCodeAt(0));
+  }
+  if (bytes.byteLength > maxBytes) throw new Error("Maximum 20 MB");
+  const content = cleanSubtitleText(decodeManualSubtitle(bytes), name, await manualFormattingOptions());
+  const formattedName = name.replace(/\.(srt|ass|ssa|vtt)$/i, ".f.$1");
+  const folder = message.action === "manualDownload" && typeof message.batchFolder === "string"
+    ? safeAnimeFolder(message.batchFolder) : undefined;
+  const filename = folder ? `${folder}/${formattedName}` : formattedName;
+  const downloadId = await downloadFormattedSubtitle(filename, content);
+  return { downloadId, filename };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (["manualSearch", "manualFiles", "manualDownload", "manualLocal"].indexOf(message?.action) === -1) return;
+  // Only extension pages may invoke manual file operations.
+  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL("html/popup.html"))) return;
+  void handleManualRequest(message).then(result => sendResponse({ ...result, rate: manualRateStatus() })).catch((reason) => {
+    sendResponse({ error: reason instanceof Error ? reason.message : String(reason), retryAt: reason?.retryAt, rate: manualRateStatus() });
+  });
   return true;
 });

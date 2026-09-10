@@ -19,3 +19,47 @@ form { padding: 18px 0; } form > label { display: block; margin-bottom: 8px; col
 .formatting-options { margin: -3px 0 4px 10px; padding: 4px 0 5px 12px; border-left: 1px solid #3b3d4b; }.format-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; color: #c4c5cd; font-size: 11px; cursor: pointer; }.format-option.select-all { margin-bottom: 4px; padding-bottom: 9px; border-bottom: 1px solid #292b35; color: #f0f0f4; font-weight: 700; }.format-option input { width: 16px; height: 16px; margin: 0; accent-color: #e41a65; cursor: pointer; }.formatting-options.disabled { opacity: .42; pointer-events: none; }
 .diagnostics { padding-top: 16px; border-top: 1px solid #292b35; }.copy-log-btn { width: 100%; padding: 9px 12px; border: 1px solid #e41a65; border-radius: 8px; background: #e41a65; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }.copy-log-btn:hover { background: #f02f78; border-color: #f02f78; }.log-status { min-height: 15px; margin-top: 7px; color: #76d89b; font-size: 10px; text-align: center; }
 .popup-footer { margin-top: 18px; padding-top: 13px; border-top: 1px solid #292b35; color: #757682; font-size: 10px; text-align: center; }
+
+body { width: 420px; }
+[hidden] { display: none !important; }
+.tabs { display: flex; gap: 8px; margin-top: 16px; }
+.tabs button { flex: 1; padding: 10px; border: 1px solid #3b3d4b; border-radius: 8px; background: #1b1d25; color: #c4c5cd; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: #e41a65; color: white; border-color: #e41a65; }
+#animeQuery { width: 100%; min-width: 0; padding: 10px; border: 1px solid #3b3d4b; border-radius: 8px; background: #1b1d25; color: white; }
+.results { max-height: 210px; overflow-y: auto; margin-bottom: 12px; }
+.anime-result { display: block; width: 100%; text-align: left; background: #1b1d25; color: #eee; border: 1px solid #3b3d4b; border-radius: 6px; padding: 10px; margin-bottom: 5px; cursor: pointer; }
+.file-choice { display: flex; align-items: start; gap: 8px; padding: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
+.file-choice input { flex-shrink: 0; accent-color: #e41a65; }
+.local-section { border-top: 1px solid #292b35; padding-top: 16px; margin-top: 18px; }
+.manual-help, .manual-status, .job-results { color: #a8a9b4; font-size: 12px; line-height: 1.5; }
+.manual-status { margin: 8px 0; white-space: pre-line; }
+.file-label { display: block; font-size: 12px; margin: 12px 0 8px; }
+#localFiles { width: 100%; font-size: 12px; }
+.job-results { padding-left: 18px; max-height: 150px; overflow: auto; overflow-wrap: anywhere; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid #aaa9ff; outline-offset: 2px; }
+
+body.manager-mode { width: auto; min-width: 360px; }
+.manager-mode .popup-card { max-width: 1200px; margin: auto; padding: 28px; }
+.manager-mode #pickerHelp { margin-top: 20px; }
+.manager-mode #animeResults { max-height: 190px; }
+.manager-mode #subtitleResults { max-height: none; overflow: visible; }
+.provider-group { border: 1px solid #3b3d4b; border-radius: 12px; margin-bottom: 16px; overflow: hidden; }
+.provider-heading { display: flex; align-items: center; gap: 12px; padding: 16px; background: #272332; font-size: 15px; font-weight: 700; cursor: pointer; }
+.provider-group .file-choice { padding: 12px 16px; margin: 0; border-top: 1px solid #292b35; cursor: pointer; font-size: 13px; line-height: 1.5; }
+.provider-group .file-choice:hover { background: #25212d; }
+.provider-group input { width: 18px; height: 18px; accent-color: #e41a65; }
+.download-toolbar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 20px; padding: 16px; background: #181921; border: 1px solid #3b3d4b; border-radius: 10px; z-index: 1; }
+.download-toolbar span { white-space: nowrap; font-size: 12px; }
+#rateNotice { margin: 16px 0; color: #e9c785; }
+
+.download-toolbar { flex-wrap: wrap; gap: 10px 20px; }
+.download-toolbar .copy-log-btn { flex: 1; width: auto; }
+.download-toolbar #rateNotice, .download-toolbar #batchProgress { flex-basis: 100%; margin: 0; }
+#batchProgress:empty { display: none; }
+
+.provider-heading { padding: 0 16px; cursor: default; }
+.provider-toggle { display: flex; align-items: center; gap: 10px; flex: 1; padding: 16px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.provider-toggle::before { content: "▸"; width: 12px; flex-shrink: 0; }
+.provider-toggle[aria-expanded="true"]::before { content: "▾"; }
+.provider-toggle:hover { color: #fff; }
