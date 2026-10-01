@@ -1,24 +1,18 @@
 import { animeSites } from "./animeSites";
 import { AnimeMetaData, JimakuEntry, Subs, AnilistObject } from "./types";
+import { SavedSubtitle, saveSubtitleFile, trackSubtitleFile, removeSubtitleFiles } from "./subtitleFiles";
 
 const lastDownloadedKeyPrefix = "lastDownloaded:";
-const downloadedRangeKeyPrefix = "downloadedRange:";
 const lastProcessedUrls = new Map<number, string>();
 const lastEpisodeKeys = new Map<number, string>();
 const navigationRevisions = new Map<number, number>();
 const downloadsInProgress = new Set<string>();
-const pendingDownloadFilenames = new Map<string, string>();
-const supportedFileExtensions = new Set([
+const textSubtitleExtensions = new Set([
   ".ass",
   ".srt",
   ".ssa",
   ".vtt",
-  ".zip",
-  ".rar",
-  ".7z",
 ]);
-const compressedFileExtensions = new Set([".zip", ".rar", ".7z"]);
-const textSubtitleExtensions = new Set([".ass", ".srt", ".ssa", ".vtt"]);
 const asbPlayerBaseUrl = "http://127.0.0.1:8766/asbplayer";
 const asbPlayerLogKey = "asbPlayerLog";
 const maxAsbPlayerLogEntries = 30;
@@ -28,21 +22,39 @@ function getTrackedDownloadIds(value: unknown): number[] {
   // Older versions stored a single number. Accept it so existing installs can
   // still remove the subtitle that was downloaded before this upgrade.
   const values = Array.isArray(value) ? value : [value];
-  return [...new Set(values.filter((id): id is number => typeof id === "number"))];
+  return [...new Set(values.filter((id): id is number =>
+    typeof id === "number" && Number.isSafeInteger(id) && id >= 0,
+  ))];
 }
 
-async function trackDownloadedFile(tabId: number, downloadId: number) {
-  const storageKey = `${lastDownloadedKeyPrefix}${tabId}`;
-  const stored = await chrome.storage.local.get(storageKey);
-  const downloadIds = getTrackedDownloadIds(stored[storageKey]);
-  if (downloadIds.indexOf(downloadId) === -1) downloadIds.push(downloadId);
-  await chrome.storage.local.set({ [storageKey]: downloadIds });
+const trackedDownloadQueues = new Map<number, Promise<void>>();
+
+async function withTrackedDownloadLock<T>(tabId: number, operation: () => Promise<T>) {
+  const previous = trackedDownloadQueues.get(tabId) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const settled = result.then(() => undefined, () => undefined);
+  trackedDownloadQueues.set(tabId, settled);
+  try {
+    return await result;
+  } finally {
+    if (trackedDownloadQueues.get(tabId) === settled) {
+      trackedDownloadQueues.delete(tabId);
+    }
+  }
 }
 
-async function alreadyDownloaded(id: number, episode: number) {
-  const key = `${downloadedRangeKeyPrefix}${id}_${episode}`;
-  const result = await chrome.storage.local.get([key]);
-  return Object.prototype.hasOwnProperty.call(result, key);
+async function trackDownloadedFile(tabId: number, downloadId: number | SavedSubtitle) {
+  return withTrackedDownloadLock(tabId, async () => {
+    if (typeof downloadId !== "number") {
+      await trackSubtitleFile(tabId, downloadId);
+      return;
+    }
+    const storageKey = `${lastDownloadedKeyPrefix}${tabId}`;
+    const stored = await chrome.storage.local.get(storageKey);
+    const downloadIds = getTrackedDownloadIds(stored[storageKey]);
+    if (downloadIds.indexOf(downloadId) === -1) downloadIds.push(downloadId);
+    await chrome.storage.local.set({ [storageKey]: downloadIds });
+  });
 }
 
 function getAnimeSiteKey(url: string) {
@@ -221,30 +233,11 @@ async function fetchSubs(anilistId: number, episode: number) {
   }
 }
 
-async function markMultipleAsDownloaded(filename: string, anilistId: number) {
-  const rangePattern = /\d+[-~]\d+/;
-  const match = filename.match(rangePattern);
-  if (!match) return;
-  const episodeRange = match[0];
-  let episodes;
-  if (episodeRange.includes("-")) {
-    episodes = episodeRange.split("-").map((episode) => parseInt(episode));
-  } else {
-    episodes = episodeRange.split("~").map((episode) => parseInt(episode));
-  }
-  if (!Number.isSafeInteger(episodes[0]) || !Number.isSafeInteger(episodes[1])) {
-    return;
-  }
-  for (let i = episodes[0]; i <= episodes[1]; i++) {
-    const key = `${downloadedRangeKeyPrefix}${anilistId}_${i}`;
-    await chrome.storage.local.set({ [key]: true });
-  }
-}
-
 type DownloadableSub = {
   url: string;
   name: string;
   extension: string;
+  entryName?: string;
 };
 
 type SubtitleChoice = DownloadableSub & {
@@ -574,10 +567,13 @@ async function prepareFormattedSubtitle(
 async function downloadFormattedSubtitle(
   filename: string,
   content: string,
-): Promise<number> {
+): Promise<number | SavedSubtitle> {
+  if (!usesBrowserDownloads()) {
+    return saveSubtitleFile(filename, new TextEncoder().encode(content).buffer);
+  }
   const mimeType = subtitleMimeType(filename);
   const url = `data:${mimeType};base64,${textToBase64(content)}`;
-  return startDownload(url, filename);
+  return startBrowserDownload(url, filename);
 }
 
 async function createAsbPlayerDiagnostic() {
@@ -628,22 +624,27 @@ function validateSub(sub: Subs): DownloadableSub | null {
   const name = sub.name.replace(/\\/g, "/").split("/").pop()?.trim();
   if (!name || name === "." || name === "..") return null;
   const extension = name.slice(name.lastIndexOf(".")).toLowerCase();
-  if (!supportedFileExtensions.has(extension)) return null;
-  return { url: url.toString(), name, extension };
+  if (!textSubtitleExtensions.has(extension)) return null;
+  const entryName = typeof (sub as Subs & { entryName?: string }).entryName === "string"
+    ? (sub as Subs & { entryName?: string }).entryName : undefined;
+  return { url: url.toString(), name, extension, entryName };
 }
 
-function startDownload(url: string, filename: string): Promise<number> {
+function usesBrowserDownloads() {
+  return !!(globalThis as typeof globalThis & {
+    browser?: { runtime?: { getBrowserInfo?: unknown } };
+  }).browser?.runtime?.getBrowserInfo;
+}
+function startBrowserDownload(url: string, filename: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    pendingDownloadFilenames.set(url, filename);
     chrome.downloads.download(
       { url, filename, saveAs: false, conflictAction: "uniquify" },
       (downloadId) => {
         const error = chrome.runtime.lastError;
         if (error) {
-          pendingDownloadFilenames.delete(url);
           reject(new Error(error.message));
-        } else if (typeof downloadId !== "number") {
-          pendingDownloadFilenames.delete(url);
+        } else if (typeof downloadId !== "number" ||
+          !Number.isSafeInteger(downloadId) || downloadId < 0) {
           reject(new Error("The browser did not return a download ID"));
         } else {
           resolve(downloadId);
@@ -653,52 +654,38 @@ function startDownload(url: string, filename: string): Promise<number> {
   });
 }
 
-chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
-  const filename = pendingDownloadFilenames.get(downloadItem.url) ??
-    pendingDownloadFilenames.get(downloadItem.finalUrl);
-  if (!filename) {
-    suggest();
-    return;
-  }
-
-  pendingDownloadFilenames.delete(downloadItem.url);
-  pendingDownloadFilenames.delete(downloadItem.finalUrl);
-  suggest({ filename, conflictAction: "uniquify" });
-});
-
-async function downloadOriginalTextSubtitle(sub: DownloadableSub): Promise<number> {
+async function downloadOriginalTextSubtitle(sub: DownloadableSub): Promise<number | SavedSubtitle> {
   const response = await fetch(sub.url);
   if (!response.ok) {
     throw new Error(`Could not read subtitle file (${response.status})`);
   }
 
-  const base64 = arrayBufferToBase64(await response.arrayBuffer());
+  const bytes = await response.arrayBuffer();
+  if (!usesBrowserDownloads()) return saveSubtitleFile(sub.name, bytes);
+  const base64 = arrayBufferToBase64(bytes);
   const mimeType = subtitleMimeType(sub.name);
   const url = `data:${mimeType};base64,${base64}`;
-  return startDownload(url, sub.name);
+  return startBrowserDownload(url, sub.name);
 }
 
 async function downloadSub(
   tabId: number,
-  anilistId: number,
   selectedSub: DownloadableSub,
   isStillCurrent: () => boolean = () => true,
 ) {
 
   try {
+    if (!textSubtitleExtensions.has(selectedSub.extension)) throw new Error("Unsupported subtitle");
     const formattingOptions = await getFormattingOptions();
     const formattedContent = await prepareFormattedSubtitle(
       selectedSub,
       formattingOptions,
     );
+    const filename = selectedSub.entryName
+      ? `${safeAnimeFolder(selectedSub.entryName)}/${selectedSub.name}` : selectedSub.name;
     const downloadId = typeof formattedContent === "string"
-      ? await downloadFormattedSubtitle(selectedSub.name, formattedContent)
-      : textSubtitleExtensions.has(selectedSub.extension)
-        ? await downloadOriginalTextSubtitle(selectedSub)
-        : await startDownload(selectedSub.url, selectedSub.name);
-    if (compressedFileExtensions.has(selectedSub.extension)) {
-      await markMultipleAsDownloaded(selectedSub.name, anilistId);
-    }
+      ? await downloadFormattedSubtitle(filename, formattedContent)
+      : await downloadOriginalTextSubtitle({ ...selectedSub, name: filename });
     await trackDownloadedFile(tabId, downloadId);
 
     const { asbplayerAutoLoad } = await chrome.storage.sync.get(
@@ -706,11 +693,6 @@ async function downloadSub(
     );
     if (asbplayerAutoLoad !== true) {
       return { asbPlayerLoaded: false, name: selectedSub.name };
-    }
-    if (compressedFileExtensions.has(selectedSub.extension)) {
-      const message = `Downloaded ${selectedSub.name}, but asbplayer cannot load compressed subtitle archives automatically`;
-      await appendAsbPlayerLog("error", message);
-      return message;
     }
     try {
       const loaded = await loadSubtitlesIntoAsbPlayer(
@@ -738,7 +720,7 @@ async function downloadSub(
     }
   } catch (reason) {
     console.error("Subtitle download failed", reason);
-    return "The subtitle download failed";
+    return reason instanceof Error ? reason.message : "The subtitle download failed";
   }
 }
 
@@ -761,7 +743,7 @@ async function chooseAndDownloadSubs(
   if (choices.length === 0) return "The API returned no supported subtitle file";
 
   if (choices.length === 1) {
-    return downloadSub(tabId, anilistId, choices[0], isStillCurrent);
+    return downloadSub(tabId, choices[0], isStillCurrent);
   }
 
   await chrome.tabs.sendMessage(tabId, {
@@ -773,21 +755,91 @@ async function chooseAndDownloadSubs(
   return null;
 }
 
+function promiseDownloadApi() {
+  // Firefox exposes Promise APIs through browser.*, while Chrome's callback
+  // APIs require reading runtime.lastError inside the callback itself.
+  return (globalThis as typeof globalThis & {
+    browser?: {
+      downloads: {
+        search(query: chrome.downloads.DownloadQuery): Promise<chrome.downloads.DownloadItem[]>;
+        removeFile(downloadId: number): Promise<void>;
+      };
+    };
+  }).browser?.downloads;
+}
+
+function callDownloadApi<T>(
+  invoke: (callback: (result: T) => void) => void | Promise<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const result = invoke((value) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message ?? "Download operation failed"));
+      else resolve(value);
+    });
+    // Some browser wrappers return a Promise even when given a callback.
+    // Handle its rejection too, so neither API style can leave an error unchecked.
+    if (result && typeof result.then === "function") result.then(resolve, reject);
+  });
+}
+
+async function findTrackedDownload(downloadId: number) {
+  const promiseApi = promiseDownloadApi();
+  const downloads = promiseApi
+    ? await promiseApi.search({ id: downloadId })
+    : await callDownloadApi<chrome.downloads.DownloadItem[]>((callback) =>
+      chrome.downloads.search({ id: downloadId }, callback),
+    );
+  return downloads.find((download) => download.id === downloadId);
+}
+
+function isOwnExistingDownload(
+  download: chrome.downloads.DownloadItem | undefined,
+): download is chrome.downloads.DownloadItem {
+  return download !== undefined && download.exists !== false &&
+    (!download.byExtensionId || download.byExtensionId === chrome.runtime.id);
+}
+
+async function removeTrackedDownloadFile(downloadId: number) {
+  const promiseApi = promiseDownloadApi();
+  if (promiseApi) return promiseApi.removeFile(downloadId);
+  return callDownloadApi<void>((callback) =>
+    chrome.downloads.removeFile(downloadId, () => callback(undefined)),
+  );
+}
+
 async function removeLastDownloaded(tabId: number) {
-  const autoDelete = (await chrome.storage.sync.get("autoDelete")).autoDelete;
-  if (autoDelete)  {
+  return withTrackedDownloadLock(tabId, async () => {
+    const autoDelete = (await chrome.storage.sync.get("autoDelete")).autoDelete;
+    if (!autoDelete) return;
+    // Old browser downloads and new directly saved files have separate ownership.
+    if (!usesBrowserDownloads()) await removeSubtitleFiles(tabId);
     const storageKey = `${lastDownloadedKeyPrefix}${tabId}`;
     const stored = await chrome.storage.local.get(storageKey);
+    if (!Object.prototype.hasOwnProperty.call(stored, storageKey)) return;
     const downloadIds = getTrackedDownloadIds(stored[storageKey]);
-    if (downloadIds.length === 0) return;
 
     const failedDownloadIds: number[] = [];
     for (const downloadId of downloadIds) {
       try {
-        await chrome.downloads.removeFile(downloadId);
+        const download = await findTrackedDownload(downloadId);
+        // Old IDs may no longer be in browser history, or may refer to a file
+        // already removed. Never remove a download initiated by another extension.
+        if (!isOwnExistingDownload(download)) continue;
+        if (download.state !== "complete") {
+          failedDownloadIds.push(downloadId);
+          continue;
+        }
+        await removeTrackedDownloadFile(downloadId);
       } catch (reason) {
-        // Keep failed IDs so they are not lost and can be retried the next
-        // time the extension cleans files for this tab.
+        // A file/history entry can disappear after the first search. Recheck
+        // state rather than matching browser error messages, which can change.
+        try {
+          if (!isOwnExistingDownload(await findTrackedDownload(downloadId))) continue;
+        } catch {
+          // An unavailable search cannot prove that deletion is unnecessary.
+        }
+        // Real deletion failures remain tracked for the next cleanup attempt.
         failedDownloadIds.push(downloadId);
         console.warn("Could not remove a previous subtitle", reason);
       }
@@ -798,7 +850,7 @@ async function removeLastDownloaded(tabId: number) {
     } else {
       await chrome.storage.local.remove(storageKey);
     }
-  }
+  });
 }
 
 type NavigationDetails = {
@@ -860,18 +912,6 @@ async function processNavigation(details: NavigationDetails) {
       await removeLastDownloaded(details.tabId);
     }
     if (!isStillCurrent()) return;
-    const hasAlreadyBeenDownloaded = await alreadyDownloaded(
-      anilistId,
-      episode,
-    );
-    if (!isStillCurrent()) return;
-    if (hasAlreadyBeenDownloaded) {
-      await chrome.tabs.sendMessage(details.tabId, {
-        action: "alreadyDownloadedInfo",
-      });
-      return;
-    }
-
     const downloadKey = episodeKey;
     if (downloadsInProgress.has(downloadKey)) return;
     downloadsInProgress.add(downloadKey);
@@ -924,7 +964,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   lastProcessedUrls.delete(tabId);
   lastEpisodeKeys.delete(tabId);
   navigationRevisions.delete(tabId);
-  void removeLastDownloaded(tabId);
+  void removeLastDownloaded(tabId).catch(reason => console.warn("Could not clean subtitles for closed tab", reason));
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -949,7 +989,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   const episodeKey = `${message.anilistId}_${message.episode}`;
   const isStillCurrent = () => lastEpisodeKeys.get(tabId) === episodeKey;
-  void downloadSub(tabId, message.anilistId, choice, isStillCurrent)
+  void downloadSub(tabId, choice, isStillCurrent)
     .then((result) => {
       if (typeof result === "string") {
         return notifyError(tabId, result).then(() => sendResponse({ error: result }));
@@ -1115,7 +1155,8 @@ async function handleManualRequest(message: any) {
     : typeof message.batchFolder === "string" ? safeAnimeFolder(message.batchFolder) : undefined;
   const filename = folder ? `${folder}/${name}` : name;
   const downloadId = await downloadFormattedSubtitle(filename, content);
-  return { downloadId, filename };
+  return typeof downloadId === "number" ? { downloadId, filename }
+    : { saved: true, filename: downloadId.filename };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

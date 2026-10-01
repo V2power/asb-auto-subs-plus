@@ -19,9 +19,6 @@ if (!contentScriptScope.asbAutoSubsMessageListenerInstalled) {
   contentScriptScope.asbAutoSubsMessageListenerInstalled = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.action) {
-      case "alreadyDownloadedInfo":
-        createToast("Subs already downloaded once", "#ff9318d3");
-        break;
       case "getAnimeMetaData":
         const animeSite: AnimeSite = animeSites.get(message.animeSiteKey)!;
         const anilistId = animeSite.getAnilistId();

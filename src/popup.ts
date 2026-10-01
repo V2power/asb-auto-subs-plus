@@ -1,8 +1,16 @@
 import { subtitleProvider, subtitleFormat } from "./providers";
+import { getSubtitleDirectory, setSubtitleDirectory, subtitleFileErrorMessage, WritableDirectory } from "./subtitleFiles";
 type Language = "en" | "pt-BR";
 
 const translations: Record<Language, Record<string, string>> = {
   en: {
+    subtitleFolderTitle: "Subtitle folder",
+    subtitleFolderHelp: "ASB saves subtitles here and creates anime folders. Saved subtitles do not appear in browser download history.",
+    chooseSubtitleFolder: "Choose folder",
+    authorizeSubtitleFolder: "Authorize folder",
+    folderMissing: "Choose a subtitle folder before saving files.",
+    folderReady: "Ready to save in",
+    folderPermission: "Authorize access to",
     localAnimeLabel: "Anime name (folder)",
     localAnimePlaceholder: "e.g. Yuru Camp",
     localAnimeRequired: "Enter the anime name before selecting subtitles.",
@@ -14,7 +22,6 @@ const translations: Record<Language, Record<string, string>> = {
     rateRemaining: "Requests remaining reported by Jimaku",
     rateWarning: "This batch may exceed the reported allowance. The batch will pause when needed; other apps on the same IP share this limit.",
     paused: "Batch paused. Pending files remain selected. Wait until the indicated time and click download to continue.",
-    openPicker: "Open subtitle picker",
     stopBatch: "Stop after this file",
 
     home: "Subtitles",
@@ -24,14 +31,14 @@ const translations: Record<Language, Record<string, string>> = {
     selectFiles: "Select all files",
     downloadSelected: "Download formatted subtitles",
     localTitle: "Subtitles from your computer",
-    manualHelp: "Applies the formatting options in Configuration, even when automatic formatting is off. Keeps original filenames. Enter the anime name to save local files in its folder in Downloads. Jimaku batches use the anime folder. Original files are preserved. SRT, ASS, SSA and VTT in UTF-8 or UTF-16 with BOM. Up to 20 MB per file. Keep this window open until the batch finishes.",
+    manualHelp: "Applies the formatting options in Configuration, even when automatic formatting is off. Keeps original filenames. Enter the anime name to save local files in its folder inside the selected subtitle directory. Jimaku files also use the anime folder. Original files are preserved. SRT, ASS, SSA and VTT in UTF-8 or UTF-16 with BOM. Up to 20 MB per file. Keep this window open until the batch finishes.",
     chooseFiles: "Select one or more subtitles",
     loading: "Loading…",
     noAnime: "No anime found. Try another name.",
     noFiles: "No supported text subtitles found.",
     processing: "Processing",
-    queued: "Download started",
-    batchDone: "Processing finished. Check the results below and your browser downloads.",
+    queued: "Saved",
+    batchDone: "Processing finished. Check the results below and your subtitle folder.",
     failed: "Failed",
 
     title: "Automatic subtitles",
@@ -62,6 +69,13 @@ const translations: Record<Language, Record<string, string>> = {
     copyFailed: "Copy failed: ",
   },
   "pt-BR": {
+    subtitleFolderTitle: "Pasta de legendas",
+    subtitleFolderHelp: "O ASB salva as legendas aqui e cria as pastas dos animes. As legendas salvas não aparecem no histórico de downloads do navegador.",
+    chooseSubtitleFolder: "Escolher pasta",
+    authorizeSubtitleFolder: "Autorizar pasta",
+    folderMissing: "Escolha uma pasta de legendas antes de salvar arquivos.",
+    folderReady: "Pronto para salvar em",
+    folderPermission: "Autorize o acesso a",
     localAnimeLabel: "Nome do anime (pasta)",
     localAnimePlaceholder: "Ex.: Yuru Camp",
     localAnimeRequired: "Informe o nome do anime antes de selecionar as legendas.",
@@ -73,7 +87,6 @@ const translations: Record<Language, Record<string, string>> = {
     rateRemaining: "Requisições restantes informadas pelo Jimaku",
     rateWarning: "Este lote pode ultrapassar o saldo informado. O lote será pausado quando necessário; outros aplicativos no mesmo IP também usam esse limite.",
     paused: "Lote pausado. Os arquivos pendentes continuam selecionados. Aguarde o horário indicado e clique em baixar para continuar.",
-    openPicker: "Abrir seletor de legendas",
     stopBatch: "Parar após este arquivo",
 
     home: "Legendas",
@@ -83,14 +96,14 @@ const translations: Record<Language, Record<string, string>> = {
     selectFiles: "Selecionar todos os arquivos",
     downloadSelected: "Baixar legendas formatadas",
     localTitle: "Legendas do computador",
-    manualHelp: "Aplica as opções de formatação das Configurações, mesmo com a formatação automática desligada. Mantém os nomes dos arquivos. Informe o nome do anime para salvar arquivos locais na pasta dele em Downloads. Lotes do Jimaku usam a pasta do anime. Os originais são preservados. SRT, ASS, SSA e VTT em UTF-8 ou UTF-16 com BOM. Até 20 MB por arquivo. Mantenha esta janela aberta até concluir o lote.",
+    manualHelp: "Aplica as opções de formatação das Configurações, mesmo com a formatação automática desligada. Mantém os nomes dos arquivos. Informe o nome do anime para salvar arquivos locais na pasta dele dentro da pasta de legendas escolhida. Arquivos do Jimaku também usam a pasta do anime. Os originais são preservados. SRT, ASS, SSA e VTT em UTF-8 ou UTF-16 com BOM. Até 20 MB por arquivo. Mantenha esta janela aberta até concluir o lote.",
     chooseFiles: "Selecionar uma ou várias legendas",
     loading: "Carregando…",
     noAnime: "Nenhum anime encontrado. Tente outro nome.",
     noFiles: "Nenhuma legenda textual compatível encontrada.",
     processing: "Processando",
-    queued: "Download iniciado",
-    batchDone: "Processamento concluído. Confira os resultados abaixo e os downloads do navegador.",
+    queued: "Salvo",
+    batchDone: "Processamento concluído. Confira os resultados abaixo e sua pasta de legendas.",
     failed: "Falha",
 
     title: "Legendas automáticas",
@@ -124,6 +137,50 @@ const translations: Record<Language, Record<string, string>> = {
 
 let currentLanguage: Language = "en";
 const translate = (key: string) => translations[currentLanguage][key] ?? key;
+let subtitleDirectory: WritableDirectory | undefined;
+const folderPicker = window as Window & {
+  showDirectoryPicker?: (options: { mode: "readwrite"; startIn: "downloads"; id: string }) => Promise<WritableDirectory>;
+};
+async function refreshSubtitleFolder() {
+  const status = document.getElementById("subtitleFolderStatus")!;
+  const authorize = document.getElementById("authorizeSubtitleFolder")!;
+  if (!folderPicker.showDirectoryPicker) {
+    document.getElementById("subtitleFolderPanel")!.hidden = true;
+    return;
+  }
+  try {
+    subtitleDirectory = await getSubtitleDirectory();
+    const granted = subtitleDirectory && await subtitleDirectory.queryPermission({ mode: "readwrite" }) === "granted";
+    status.textContent = subtitleDirectory
+      ? `${translate(granted ? "folderReady" : "folderPermission")}: ${subtitleDirectory.name}` : translate("folderMissing");
+    authorize.hidden = !subtitleDirectory || !!granted;
+  } catch (error) { status.textContent = await subtitleFileErrorMessage(error); }
+}
+async function openFolderWindow() {
+  if (new URLSearchParams(location.search).get("manager") === "1") return false;
+  // The action popup closes on losing focus to the OS picker. Use a stable window.
+  await chrome.windows.create({ url: chrome.runtime.getURL("html/popup.html?manager=1"), type: "popup", width: 1080, height: 820 });
+  window.close();
+  return true;
+}
+document.getElementById("chooseSubtitleFolder")!.addEventListener("click", async () => {
+  try {
+    if (await openFolderWindow()) return;
+    const directory = await folderPicker.showDirectoryPicker!({ mode: "readwrite", startIn: "downloads", id: "asb-subtitles" });
+    await setSubtitleDirectory(directory);
+    await refreshSubtitleFolder();
+  } catch (error) {
+    if ((error as DOMException).name !== "AbortError") document.getElementById("subtitleFolderStatus")!.textContent = await subtitleFileErrorMessage(error);
+  }
+});
+document.getElementById("authorizeSubtitleFolder")!.addEventListener("click", async () => {
+  try {
+    // Call directly in this user gesture; a worker cannot prompt for permission.
+    if (new URLSearchParams(location.search).get("manager") !== "1") { await openFolderWindow(); return; }
+    await subtitleDirectory?.requestPermission({ mode: "readwrite" });
+    await refreshSubtitleFolder();
+  } catch (error) { document.getElementById("subtitleFolderStatus")!.textContent = await subtitleFileErrorMessage(error); }
+});
 
 function applyTranslations() {
   const pageTitle = new URLSearchParams(location.search).get("manager") === "1" ? "managerTitle" : "home";
@@ -146,6 +203,7 @@ async function loadLanguage() {
   if (languagePicker) languagePicker.value = currentLanguage;
   applyTranslations();
   setApiKeyInfo();
+  void refreshSubtitleFolder();
 }
 
 document.getElementById("language")?.addEventListener("change", async (event) => {
@@ -153,6 +211,7 @@ document.getElementById("language")?.addEventListener("change", async (event) =>
   await chrome.storage.sync.set({ language: currentLanguage });
   applyTranslations();
   setApiKeyInfo();
+  void refreshSubtitleFolder();
 });
 applyTranslations();
 
@@ -547,9 +606,7 @@ async function runManualBatch(jobs: Array<{name: string; run: () => Promise<any>
 element("downloadSelected").addEventListener("click", () => {
   const selected = Array.from(document.querySelectorAll<HTMLInputElement>(".file-choice input:checked"))
     .map((input) => availableFiles[Number(input.value)]);
-  if (selected.length > 1) {
-    selected.forEach(file => pendingBatchFolders.set(file.url, selectedAnimeName));
-  }
+  selected.forEach(file => pendingBatchFolders.set(file.url, selectedAnimeName));
   void runManualBatch(selected.map((file) => ({ name: file.name, run: async () => {
     const response = await manualRequest({ action: "manualDownload", file, batchFolder: pendingBatchFolders.get(file.url) });
     pendingBatchFolders.delete(file.url);

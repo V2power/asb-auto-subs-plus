@@ -21,6 +21,13 @@
       <button type="button" id="homeTab" aria-pressed="true" data-i18n="home">Subtitles</button>
       <button type="button" id="settingsTab" aria-pressed="false" data-i18n="configuration">Configuration</button>
     </nav>
+    <section class="local-section" id="subtitleFolderPanel">
+      <h2 data-i18n="subtitleFolderTitle">Subtitle folder</h2>
+      <p class="manual-help" data-i18n="subtitleFolderHelp">Choose the folder where ASB saves subtitles and creates anime folders.</p>
+      <button type="button" id="chooseSubtitleFolder" class="copy-log-btn" data-i18n="chooseSubtitleFolder">Choose folder</button>
+      <button type="button" id="authorizeSubtitleFolder" class="copy-log-btn" hidden data-i18n="authorizeSubtitleFolder">Authorize folder</button>
+      <p id="subtitleFolderStatus" class="manual-status" role="status"></p>
+    </section>
     <section id="homePanel">
       <p id="pickerHelp" class="manual-help" hidden data-i18n="groupHelp"></p>
       <form id="searchForm">

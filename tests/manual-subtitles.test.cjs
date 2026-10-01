@@ -9,6 +9,7 @@ function setup(settings = {}) {
   const event = { addListener() {} };
   const context = {
     exports: {}, require: () => ({ animeSites: [] }), console, URL,
+    browser: { runtime: { getBrowserInfo() {} } },
     TextDecoder, TextEncoder, Uint8Array, AbortController, Response, setTimeout, clearTimeout, btoa, atob, encodeURIComponent,
     chrome: {
       runtime: { id: 'test', getURL: p => `chrome-extension://test/${p}`, onMessage: { addListener: fn => listeners.push(fn) } },
@@ -37,7 +38,7 @@ test('manual formatting preserves timestamps, cleans text and never tracks episo
   await context.handleManualRequest(local());
   assert.equal(downloads[0].filename, 'Yuru Camp/episode.srt');
   assert.equal(downloads[0].conflictAction, 'uniquify');
-  const text = Buffer.from(downloads[0].url.split(',')[1], 'base64').toString('utf8');
+  const text = Buffer.from(new URL(downloads[0].url).pathname.split(',')[1], 'base64').toString('utf8');
   assert.match(text, /00:00:01,000 --> 00:00:02,000/);
   assert.match(text, /漢字次/);
   assert.doesNotMatch(text, /太郎|かんじ/);
@@ -47,7 +48,7 @@ test('manual formatting preserves timestamps, cleans text and never tracks episo
 test('manual formatting honors individual options', async () => {
   const { context, downloads } = setup({ removeSpeakerNames: false, joinSubtitleLines: false });
   await context.handleManualRequest(local());
-  const text = Buffer.from(downloads[0].url.split(',')[1], 'base64').toString('utf8');
+  const text = Buffer.from(new URL(downloads[0].url).pathname.split(',')[1], 'base64').toString('utf8');
   assert.match(text, /（太郎）漢字\n次/);
 });
 test('rejects invalid encoding and unsupported formats; accepts UTF-16 BOM', async () => {

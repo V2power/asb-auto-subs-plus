@@ -17,7 +17,8 @@ To use the extension you have to do the following steps once:
     - open "chrome://extensions/", click on "Load Unpacked" and select the unzipped extension
 2. Create a [Jimaku Account](https://jimaku.cc/login)  and generate your [API Key](https://jimaku.cc/account)
 3. In your searchbar at the top click on the puzzle icon and click on the extension and submit the key
-4. Go to any anime episode on hianimez or miruro and it should download the subtitles automatically
+4. In Helium/Chromium, open ASB and choose the subtitle folder (for example Downloads/Legendas), allowing read/write access.
+5. Go to any anime episode on hianimez or miruro and it should save the subtitles automatically
 
 # Build locally
 
@@ -43,33 +44,58 @@ or UTF-16 with a BOM, with a maximum of 20 MB per file. Unsupported encodings
 produce an error instead of silently corrupting the text.
 
 Copies retain their original filenames (no added suffix). Local files are saved
-in `Anime name/` under the browser's download directory;
+in `Anime name/` under the selected subtitle directory (Chromium) or Downloads (Firefox);
 original files are preserved. Keep the picker window (or popup for local files) open until the batch finishes.
 Each file has its own result, so a failure does not stop the remaining files.
-The browser's download list shows final download completion or disk errors.
+The per-file result reports disk write success or failure.
 Manual downloads are not auto-deleted and are not sent to asbplayer. Automatic
 anime detection and its existing settings continue to work independently.
 
 Run `npm test` for type checking and manual subtitle regression tests.
 
-Manual Jimaku requests are serialized, spaced by at least 1.2 seconds, and search/file
-list responses are cached for five minutes. Identical concurrent lookups are shared.
-The picker reports the remaining allowance from Jimaku response headers and warns
-when a selection may exceed it. HTTP 429 and exhausted allowance pause manual traffic
-until the server reset time (or Retry-After; 60 seconds if neither is supplied).
-Pending files remain selected for a manual retry; successful downloads are deselected.
-The limit is shared by IP, so other applications can consume allowance too.
-See https://jimaku.cc/api/docs#description/rate-limits.
+## Helium / Chromium and FDM (0.0.54)
 
-Provider/format groups start collapsed. Click their heading to show episodes;
-the separate checkbox selects the whole group without expanding it. Amazon and
-Netflix tags inside filenames are recognized as streaming providers.
-Selecting two or more Jimaku files saves the batch under `Anime name/` in Downloads.
-Single Jimaku downloads stay in the download directory. Local files, whether one
-or several, are saved in `Anime name/`. Existing files are preserved using
-the browser's automatic filename disambiguation. A pending
-file retried after a batch pause keeps its batch folder. Invalid folder characters
-are replaced to keep the anime title a single directory name.
+ASB saves SRT, ASS, SSA and VTT directly in a user-authorized directory using the
+File System Access API. The official FDM extension stays unchanged. There is no
+global filename listener, no download URL marker and no compatible FDM build
+required. Archives and ordinary files are left to your usual download tools.
 
-For local subtitles, enter the anime name in the folder field before selecting files.
-All files in that selection are saved under that anime folder, without an added suffix.
+Reload the existing unpacked ASB extension in chrome://extensions. Open ASB,
+click **Choose folder**, then click it in the larger window and select a directory.
+A dedicated folder such as Downloads/Legendas is recommended. Allow read/write
+access. If the browser later revokes access, use **Authorize folder** in the larger
+window. ASB reports an error instead of silently using the browser download API.
+Firefox continues using its existing download API.
+
+Local files and selected Jimaku files are saved under the anime title. Automatic
+subtitles use the Jimaku entry name as their folder. Original subtitle filenames
+are preserved. For example:
+
+`High School DxD/[Judas] High School DxD S1 - 02_jp.srt`
+
+Existing files are preserved: a duplicate becomes `episode (1).srt`.
+Files saved directly do not appear in browser download history. The batch result
+reports successful disk writes and the actual filename. Manual files are kept;
+auto-delete applies only to files saved automatically for that episode/tab.
+It checks stored file handles and contents, preserving user edits. Missing files
+are discarded from tracking; permission or disk failures remain for retry.
+The legacy browser-download cleanup still consumes callback errors and ignores
+invalid IDs and files owned by another extension. Folder handles are persisted
+locally in IndexedDB, never synced to another computer.
+
+`npm test` checks types, formatting, legacy cleanup, safe paths, concurrent saves,
+duplicate preservation, permission failures and direct-file cleanup.
+The optional runner uses an isolated browser profile, real OPFS file handles and
+IndexedDB, plus a fixture of FDM 3.3.1's unmodified naming behavior. It does not
+initialize the installed FDM native application or automate the OS folder picker:
+
+`node tests/browser-downloads.cjs --browser '<Helium executable>' --order fdm-first`
+
+The root selection in production always comes from the user's directory picker;
+OPFS is used only as disposable storage in the integration test.
+
+Manual Jimaku requests remain serialized and spaced by at least 1.2 seconds.
+Search/file lists are cached for five minutes. Rate limits and HTTP 429 pause the
+batch until the server reset time. Pending files remain selected for retry and
+keep their anime folder. Provider/format groups start collapsed; their checkboxes
+select the group without expanding it.
