@@ -256,24 +256,32 @@ test('closing a tab removes its tracked files', async () => {
   assert.equal(closed, 9);
 });
 
-test('picker choice message validates its input and saves the chosen file', async () => {
+test('picker choice message validates its input', async () => {
   const b = navigation();
-  const handler = b.listeners[0];
   const reply = [];
-  const send = (message, sender = { tab: { id: 1 } }) => handler(message, sender, r => reply.push(r));
+  const send = (message, sender = { tab: { id: 1 } }) => b.listeners[0](message, sender, r => reply.push(r));
   send({ action: 'downloadSubtitleChoice', choice: { url: 'https://evil.com/a.srt', name: 'a.srt' }, anilistId: 1, episode: 1 });
-  assert.deepEqual(plain(reply[0]), { error: 'Invalid subtitle choice' });
   send({ action: 'downloadSubtitleChoice', choice: { url: subUrl, name: 'ep.srt' }, anilistId: 'x', episode: 1 });
-  assert.equal(reply[1].error, 'Invalid subtitle choice');
   send({ action: 'downloadSubtitleChoice', choice: { url: subUrl, name: 'ep.srt' }, anilistId: 1, episode: 1 }, {});
-  assert.equal(reply[2].error, 'Invalid subtitle choice');
-  b.context.fetch = async () => new Response(srt);
-  const accepted = send({ action: 'downloadSubtitleChoice', choice: { url: subUrl, name: 'ep.srt' }, anilistId: 1, episode: 1 });
-  assert.equal(accepted, true, 'async response');
-  for (let i = 0; i < 40 && reply.length < 4; i++) await tick();
-  // The tab never registered this episode, so the choice is stale and skipped.
-  assert.deepEqual(plain(reply[3]), { skipped: true });
+  assert.deepEqual(plain(reply.map(r => r.error)), ['Invalid subtitle choice', 'Invalid subtitle choice', 'Invalid subtitle choice']);
+});
+
+test('picker choice for the current episode is saved; for another episode it is skipped', async () => {
+  const two = [
+    { name: 'a.srt', url: subUrl, size: 1, lastModified: '' },
+    { name: 'b.ass', url: 'https://jimaku.cc/b.ass', size: 1, lastModified: '' },
+  ];
+  const b = navigation({ files: two });
+  await b.context.processNavigation({ tabId: 1, frameId: 0, url: watch }); // registers 100_1 for tab 1
+  const inner = b.context.fetch;
+  b.context.fetch = async (url, init) => url === subUrl ? new Response(srt) : inner(url, init);
+  const ask = episode => new Promise(resolve => {
+    b.listeners[0]({ action: 'downloadSubtitleChoice', choice: { url: subUrl, name: 'a.srt' }, anilistId: 100, episode }, { tab: { id: 1 } }, resolve);
+  });
+  assert.deepEqual(plain(await ask(2)), { skipped: true });
   assert.equal(b.saves.length, 0);
+  assert.deepEqual(plain(await ask(1)), { ok: true });
+  assert.equal(b.saves.length, 1);
 });
 
 // ---- optimisations -------------------------------------------------------------------
@@ -319,4 +327,24 @@ test('content script injection is skipped when it already answers, done in paral
   assert.deepEqual(await run(async () => ({ ready: true })), []);
   assert.deepEqual((await run(async () => { throw new Error('Receiving end does not exist'); })).sort(), ['css', 'js']);
   assert.deepEqual((await run(async () => undefined)).sort(), ['css', 'js']);
+});
+
+test('AniList cache key is the normalised title and concurrent lookups share one request', async () => {
+  let calls = 0;
+  const b = loadBackground({ fetch: async () => { calls++; await tick(10); return anilist100(); } });
+  const results = await Promise.all(['Show', 'show', ' SHOW! '].map(x => b.context.fetchAnilistId(x)));
+  assert.deepEqual(plain(results), [100, 100, 100]);
+  assert.equal(await b.context.fetchAnilistId('sHoW'), 100);
+  assert.equal(calls, 1);
+});
+
+test('concurrent navigations for one tab inject the content script once', async () => {
+  let injections = 0;
+  const b = loadBackground({ sendMessage: async () => { await tick(5); } });
+  b.context.chrome.scripting.insertCSS = async () => { injections++; };
+  b.context.chrome.scripting.executeScript = async () => { injections++; };
+  await Promise.all([b.context.ensureContentScript(1), b.context.ensureContentScript(1)]);
+  assert.equal(injections, 2, 'one CSS + one script');
+  await b.context.ensureContentScript(1);
+  assert.equal(injections, 4, 'a later navigation checks again');
 });

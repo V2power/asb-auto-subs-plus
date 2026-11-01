@@ -104,22 +104,34 @@ async function getApiKey(): Promise<string | null> {
 }
 
 const anilistIdCache = new Map<string, { expires: number; id: number }>();
+const anilistIdPending = new Map<string, Promise<number | undefined>>();
 const anilistCacheTtl = 10 * 60 * 1000;
 const anilistCacheLimit = 50;
 
+const normalizeTitle = (value: string) => value.normalize("NFKD")
+  .replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
 async function fetchAnilistId(title: string) {
   // AniList is rate limited and a title resolves to the same id on every visit.
-  // Only successful, unambiguous matches are cached; failures are retried.
-  const cached = anilistIdCache.get(title);
+  // Keyed by the same normalised title used for matching; concurrent lookups
+  // share one request. Only successful matches are cached; failures are retried.
+  const key = normalizeTitle(title);
+  const cached = anilistIdCache.get(key);
   if (cached && cached.expires > Date.now()) return cached.id;
-  const id = await queryAnilistId(title);
-  if (id !== undefined) {
-    if (anilistIdCache.size >= anilistCacheLimit) {
-      anilistIdCache.delete(anilistIdCache.keys().next().value!);
+  const pending = anilistIdPending.get(key);
+  if (pending) return pending;
+  const lookup = (async () => {
+    const id = await queryAnilistId(title);
+    if (id !== undefined) {
+      if (anilistIdCache.size >= anilistCacheLimit) {
+        anilistIdCache.delete(anilistIdCache.keys().next().value!);
+      }
+      anilistIdCache.set(key, { expires: Date.now() + anilistCacheTtl, id });
     }
-    anilistIdCache.set(title, { expires: Date.now() + anilistCacheTtl, id });
-  }
-  return id;
+    return id;
+  })();
+  anilistIdPending.set(key, lookup);
+  try { return await lookup; } finally { anilistIdPending.delete(key); }
 }
 
 async function queryAnilistId(title: string) {
@@ -152,8 +164,6 @@ async function queryAnilistId(title: string) {
       return;
     }
     const anilistObject: AnilistObject = await anilistResponse.json();
-    const normalizeTitle = (value: string) => value.normalize("NFKD")
-      .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
     const searchTitle = normalizeTitle(title);
     const matches = anilistObject.data.Page.media.filter(media =>
       Number.isSafeInteger(media.id) && media.id > 0 &&
@@ -326,7 +336,7 @@ function appendAsbPlayerLog(
     });
   });
   asbPlayerLogQueue = write.catch(() => undefined);
-  return write;
+  return write.catch(() => undefined);
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
@@ -903,7 +913,20 @@ function isMissingTabError(reason: unknown) {
   );
 }
 
-async function ensureContentScript(tabId: number) {
+const contentScriptInjections = new Map<number, Promise<void>>();
+
+function ensureContentScript(tabId: number) {
+  // Concurrent navigation events for one tab share a single injection.
+  const running = contentScriptInjections.get(tabId);
+  if (running) return running;
+  const injection = injectContentScriptIfNeeded(tabId);
+  const clear = () => { contentScriptInjections.delete(tabId); };
+  injection.then(clear, clear);
+  contentScriptInjections.set(tabId, injection);
+  return injection;
+}
+
+async function injectContentScriptIfNeeded(tabId: number) {
   // A SPA episode switch keeps the page, and with it the content script and CSS.
   // Inject only when nothing answers (first visit, reload, or extension update).
   try {

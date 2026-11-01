@@ -1,7 +1,7 @@
 import { AnimeSite, animeSites } from "./animeSites";
 
 type ContentScriptScope = typeof globalThis & {
-  asbAutoSubsMessageListenerInstalled?: boolean;
+  asbAutoSubsMessageListener?: Parameters<typeof chrome.runtime.onMessage.addListener>[0];
 };
 
 type SubtitleChoice = {
@@ -13,11 +13,15 @@ type SubtitleChoice = {
 
 const contentScriptScope = globalThis as ContentScriptScope;
 
-// This file is injected whenever a supported site's URL changes. A SPA episode
-// switch keeps the same document, so retain one message listener for it.
-if (!contentScriptScope.asbAutoSubsMessageListenerInstalled) {
-  contentScriptScope.asbAutoSubsMessageListenerInstalled = true;
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// The background injects this file only when the tab does not answer a ping.
+// That also happens after an extension reload, when the previous listener is
+// dead, so always register a fresh one and drop the previous if still ours.
+{
+  const previous = contentScriptScope.asbAutoSubsMessageListener;
+  if (previous) {
+    try { chrome.runtime.onMessage.removeListener(previous); } catch { /* orphaned context */ }
+  }
+  const listener = (message: any, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
     switch (message.action) {
       case "ping":
         sendResponse({ ready: true });
@@ -43,7 +47,9 @@ if (!contentScriptScope.asbAutoSubsMessageListenerInstalled) {
         showSubtitlePicker(message.choices, message.anilistId, message.episode);
         break;
     }
-  });
+  };
+  contentScriptScope.asbAutoSubsMessageListener = listener;
+  chrome.runtime.onMessage.addListener(listener);
 }
 
 function showSubtitlePicker(
