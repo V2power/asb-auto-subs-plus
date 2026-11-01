@@ -19,6 +19,9 @@ if (!contentScriptScope.asbAutoSubsMessageListenerInstalled) {
   contentScriptScope.asbAutoSubsMessageListenerInstalled = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.action) {
+      case "ping":
+        sendResponse({ ready: true });
+        break;
       case "getAnimeMetaData":
         const animeSite: AnimeSite = animeSites.get(message.animeSiteKey)!;
         const anilistId = animeSite.getAnilistId();

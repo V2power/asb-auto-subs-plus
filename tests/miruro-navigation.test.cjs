@@ -74,10 +74,11 @@ test('episode parsing accepts query order and rejects invalid episode values and
 test('AniList lookup selects the matching title and rejects unrelated or ambiguous search results', async () => {
   const { context } = background();
   assert.equal(await context.fetchAnilistId('kuroneko to majo no kyoushitsu'), 196974);
+  // Successful lookups are cached per title, so the failure cases use other spellings.
   context.fetch = async () => new Response(JSON.stringify({ data: { Page: { media: [cowboy] } } }));
-  assert.equal(await context.fetchAnilistId('kuroneko to majo no kyoushitsu'), undefined);
+  assert.equal(await context.fetchAnilistId('Kuroneko to Majo no Kyoushitsu'), undefined);
   context.fetch = async () => new Response(JSON.stringify({ data: { Page: { media: [correctAnime, { ...correctAnime, id: 123 }] } } }));
-  assert.equal(await context.fetchAnilistId('kuroneko to majo no kyoushitsu'), undefined);
+  assert.equal(await context.fetchAnilistId('KURONEKO TO MAJO NO KYOUSHITSU'), undefined);
 });
 test('same-document duplicate events are ignored, but reload of the same URL downloads again', async () => {
   const { context, updates, saves, searches } = background();

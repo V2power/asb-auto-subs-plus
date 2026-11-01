@@ -116,3 +116,19 @@ legacy routes and reloads. The optional browser runner serves an offline Miruro
 fixture at the reported URL and intercepts AniList/Jimaku requests with test
 responses, exercising actual extension injection, reload events and tab-close
 cleanup without using a live API key.
+
+## Performance and regression tests (0.0.56)
+
+- The subtitle file is downloaded once and reused for saving, formatting and
+  asbplayer auto-load (previously up to three downloads).
+- One settings read per download; the Jimaku API key is read once per navigation.
+- Successful AniList title lookups are cached in memory for 10 minutes. Failures
+  and ambiguous matches are never cached.
+- The content script and CSS are injected only when the tab does not answer a
+  ping, and in parallel when needed.
+- The asbplayer event log is written serially, so concurrent events no longer
+  overwrite each other.
+- Base64 encoding no longer copies each chunk into a temporary array.
+- New regression tests cover site detection, manifest parity (domains, CSP,
+  versions), subtitle formatting, AniList/Jimaku logic and rate limits, the
+  download and asbplayer flow, and end-to-end navigation.

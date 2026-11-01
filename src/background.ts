@@ -103,7 +103,26 @@ async function getApiKey(): Promise<string | null> {
   return legacyStorageItem.apiKey;
 }
 
+const anilistIdCache = new Map<string, { expires: number; id: number }>();
+const anilistCacheTtl = 10 * 60 * 1000;
+const anilistCacheLimit = 50;
+
 async function fetchAnilistId(title: string) {
+  // AniList is rate limited and a title resolves to the same id on every visit.
+  // Only successful, unambiguous matches are cached; failures are retried.
+  const cached = anilistIdCache.get(title);
+  if (cached && cached.expires > Date.now()) return cached.id;
+  const id = await queryAnilistId(title);
+  if (id !== undefined) {
+    if (anilistIdCache.size >= anilistCacheLimit) {
+      anilistIdCache.delete(anilistIdCache.keys().next().value!);
+    }
+    anilistIdCache.set(title, { expires: Date.now() + anilistCacheTtl, id });
+  }
+  return id;
+}
+
+async function queryAnilistId(title: string) {
   const query = `
   query ($title: String) {
     Page (perPage: 10) {
@@ -175,8 +194,8 @@ async function getAnilistIdAndEpisode(tabId: number, animeSiteKey: string) {
   return { anilistId, episode };
 }
 
-async function fetchSubs(anilistId: number, episode: number) {
-  const jimakuAPIKey = await getApiKey();
+async function fetchSubs(anilistId: number, episode: number, knownApiKey?: string) {
+  const jimakuAPIKey = knownApiKey ?? await getApiKey();
   if (!jimakuAPIKey) {
     return "Please configure your Jimaku API key";
   }
@@ -284,35 +303,43 @@ type AsbPlayerMedia = {
   title?: string;
 };
 
-async function appendAsbPlayerLog(
+let asbPlayerLogQueue: Promise<void> = Promise.resolve();
+
+function appendAsbPlayerLog(
   level: AsbPlayerLogEntry["level"],
   message: string,
 ) {
-  const { [asbPlayerLogKey]: existingLog } = await chrome.storage.local.get(
-    asbPlayerLogKey,
-  );
-  const entries = Array.isArray(existingLog) ? existingLog : [];
+  // The log is a read-modify-write on storage. Serialize it so concurrent
+  // events cannot overwrite each other's entries.
   const entry: AsbPlayerLogEntry = {
     timestamp: new Date().toISOString(),
     level,
     message,
   };
-  await chrome.storage.local.set({
-    [asbPlayerLogKey]: [...entries, entry].slice(-maxAsbPlayerLogEntries),
+  const write = asbPlayerLogQueue.then(async () => {
+    const { [asbPlayerLogKey]: existingLog } = await chrome.storage.local.get(
+      asbPlayerLogKey,
+    );
+    const entries = Array.isArray(existingLog) ? existingLog : [];
+    await chrome.storage.local.set({
+      [asbPlayerLogKey]: [...entries, entry].slice(-maxAsbPlayerLogEntries),
+    });
   });
+  asbPlayerLogQueue = write.catch(() => undefined);
+  return write;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 8192;
+  const chunks: string[] = [];
+  const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode.apply(
+    chunks.push(String.fromCharCode.apply(
       null,
-      Array.from(bytes.subarray(index, index + chunkSize)),
-    );
+      bytes.subarray(index, index + chunkSize) as unknown as number[],
+    ));
   }
-  return btoa(binary);
+  return btoa(chunks.join(""));
 }
 
 function textToBase64(text: string) {
@@ -377,19 +404,11 @@ async function waitForAsbPlayerMedia(isStillCurrent: () => boolean) {
 
 async function loadSubtitlesIntoAsbPlayer(
   sub: DownloadableSub,
-  formattedContent?: string,
+  data: string | ArrayBuffer,
   isStillCurrent: () => boolean = () => true,
 ) {
-  let base64: string;
-  if (typeof formattedContent === "string") {
-    base64 = textToBase64(formattedContent);
-  } else {
-    const subtitleResponse = await fetch(sub.url);
-    if (!subtitleResponse.ok) {
-      throw new Error(`Could not read subtitle file (${subtitleResponse.status})`);
-    }
-    base64 = arrayBufferToBase64(await subtitleResponse.arrayBuffer());
-  }
+  const base64 = typeof data === "string"
+    ? textToBase64(data) : arrayBufferToBase64(data);
   return withAsbPlayerLoadLock(async () => {
     if (!isStillCurrent()) return false;
     const mediaReady = await waitForAsbPlayerMedia(isStillCurrent);
@@ -414,11 +433,9 @@ async function loadSubtitlesIntoAsbPlayer(
   });
 }
 
-async function getFormattingOptions(): Promise<FormattingOptions | null> {
-  const settings = await chrome.storage.sync.get([
-    "formatSubtitles",
-    ...formattingOptionIds,
-  ]);
+function formattingOptionsFrom(
+  settings: { [key: string]: unknown },
+): FormattingOptions | null {
   // Users upgrading from the earlier formatter did not have these keys saved.
   // Keep its default: format unless the user explicitly turns an option off.
   if (settings.formatSubtitles === false) return null;
@@ -557,16 +574,20 @@ function subtitleMimeType(filename: string) {
   return "text/plain;charset=utf-8";
 }
 
-async function prepareFormattedSubtitle(
-  sub: DownloadableSub,
-  options: FormattingOptions | null,
-) {
-  if (!options || !textSubtitleExtensions.has(sub.extension)) return null;
-  const response = await fetch(sub.url);
+async function fetchSubtitleBytes(url: string) {
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Could not read subtitle file (${response.status})`);
   }
-  const bytes = await response.arrayBuffer();
+  return response.arrayBuffer();
+}
+
+function formatSubtitleBytes(
+  bytes: ArrayBuffer,
+  filename: string,
+  options: FormattingOptions | null,
+) {
+  if (!options) return null;
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -574,7 +595,7 @@ async function prepareFormattedSubtitle(
     // Never corrupt legacy-encoded files; download the original instead.
     return null;
   }
-  return cleanSubtitleText(source, sub.name, options);
+  return cleanSubtitleText(source, filename, options);
 }
 
 async function downloadFormattedSubtitle(
@@ -667,18 +688,15 @@ function startBrowserDownload(url: string, filename: string): Promise<number> {
   });
 }
 
-async function downloadOriginalTextSubtitle(sub: DownloadableSub): Promise<number | SavedSubtitle> {
-  const response = await fetch(sub.url);
-  if (!response.ok) {
-    throw new Error(`Could not read subtitle file (${response.status})`);
-  }
-
-  const bytes = await response.arrayBuffer();
-  if (!usesBrowserDownloads()) return saveSubtitleFile(sub.name, bytes);
+async function downloadOriginalTextSubtitle(
+  filename: string,
+  bytes: ArrayBuffer,
+): Promise<number | SavedSubtitle> {
+  if (!usesBrowserDownloads()) return saveSubtitleFile(filename, bytes);
   const base64 = arrayBufferToBase64(bytes);
-  const mimeType = subtitleMimeType(sub.name);
+  const mimeType = subtitleMimeType(filename);
   const url = `data:${mimeType};base64,${base64}`;
-  return startBrowserDownload(url, sub.name);
+  return startBrowserDownload(url, filename);
 }
 
 async function downloadSub(
@@ -689,29 +707,33 @@ async function downloadSub(
 
   try {
     if (!textSubtitleExtensions.has(selectedSub.extension)) throw new Error("Unsupported subtitle");
-    const formattingOptions = await getFormattingOptions();
-    const formattedContent = await prepareFormattedSubtitle(
-      selectedSub,
-      formattingOptions,
+    // One settings read and one download serve saving, formatting and asbplayer.
+    const settings = await chrome.storage.sync.get([
+      "formatSubtitles",
+      "asbplayerAutoLoad",
+      ...formattingOptionIds,
+    ]);
+    const bytes = await fetchSubtitleBytes(selectedSub.url);
+    const formattedContent = formatSubtitleBytes(
+      bytes,
+      selectedSub.name,
+      formattingOptionsFrom(settings),
     );
     if (!isStillCurrent()) return null;
     const filename = selectedSub.entryName
       ? `${safeAnimeFolder(selectedSub.entryName)}/${selectedSub.name}` : selectedSub.name;
     const downloadId = typeof formattedContent === "string"
       ? await downloadFormattedSubtitle(filename, formattedContent)
-      : await downloadOriginalTextSubtitle({ ...selectedSub, name: filename });
+      : await downloadOriginalTextSubtitle(filename, bytes);
     await trackDownloadedFile(tabId, downloadId);
 
-    const { asbplayerAutoLoad } = await chrome.storage.sync.get(
-      "asbplayerAutoLoad",
-    );
-    if (asbplayerAutoLoad !== true) {
+    if (settings.asbplayerAutoLoad !== true) {
       return { asbPlayerLoaded: false, name: selectedSub.name };
     }
     try {
       const loaded = await loadSubtitlesIntoAsbPlayer(
         selectedSub,
-        formattedContent ?? undefined,
+        formattedContent ?? bytes,
         isStillCurrent,
       );
       if (!loaded) {
@@ -743,8 +765,9 @@ async function chooseAndDownloadSubs(
   anilistId: number,
   episode: number,
   isStillCurrent: () => boolean,
+  apiKey?: string,
 ) {
-  const subs = await fetchSubs(anilistId, episode);
+  const subs = await fetchSubs(anilistId, episode, apiKey);
   if (!isStillCurrent()) return null;
   if (typeof subs === "string") return subs;
 
@@ -880,6 +903,27 @@ function isMissingTabError(reason: unknown) {
   );
 }
 
+async function ensureContentScript(tabId: number) {
+  // A SPA episode switch keeps the page, and with it the content script and CSS.
+  // Inject only when nothing answers (first visit, reload, or extension update).
+  try {
+    const reply = await chrome.tabs.sendMessage(tabId, { action: "ping" });
+    if (reply?.ready === true) return;
+  } catch {
+    // No listener in the tab yet.
+  }
+  await Promise.all([
+    chrome.scripting.insertCSS({
+      target: { tabId },
+      files: ["css/index.css"],
+    }),
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["dist/injectScript.js"],
+    }),
+  ]);
+}
+
 async function processNavigation(details: NavigationDetails) {
   if (details.frameId !== 0) return;
   try {
@@ -893,14 +937,7 @@ async function processNavigation(details: NavigationDetails) {
       navigationRevisions.get(details.tabId) === navigationRevision;
     const animeSiteKey = getAnimeSiteKey(url);
     if (!animeSiteKey) return;
-    await chrome.scripting.insertCSS({
-      target: { tabId: details.tabId },
-      files: ["css/index.css"],
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId: details.tabId },
-      files: ["dist/injectScript.js"],
-    });
+    await ensureContentScript(details.tabId);
 
     const apiKey = await getApiKey();
     if (!apiKey) {
@@ -935,6 +972,7 @@ async function processNavigation(details: NavigationDetails) {
         anilistId,
         episode,
         isStillCurrent,
+        apiKey,
       );
       if (!isStillCurrent()) return;
       if (result === null) return;

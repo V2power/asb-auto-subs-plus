@@ -43,7 +43,7 @@ test('manual formatting preserves timestamps, cleans text and never tracks episo
   assert.match(text, /漢字次/);
   assert.doesNotMatch(text, /太郎|かんじ/);
   assert.equal(writes.length, 0);
-  assert.equal(await context.getFormattingOptions(), null);
+  assert.equal(context.formattingOptionsFrom({ formatSubtitles: false }), null);
 });
 test('manual formatting honors individual options', async () => {
   const { context, downloads } = setup({ removeSpeakerNames: false, joinSubtitleLines: false });
