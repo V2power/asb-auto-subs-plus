@@ -219,6 +219,61 @@ async function main() {
     report.cases.push({ name: 'auto-delete preserves user edits', passed: edited === 'edited' });
     const histories = await cdp.evaluate('chrome.downloads.search({})', session);
     report.cases.push({ name: 'subtitles never create browser download entries', passed: histories.length === 0 });
+    // Serve an offline fixture at the exact reported route. This tests actual
+    // browser reload events and the packaged content script without Cloudflare,
+    // the live Jimaku API/key, or the native FDM application.
+    const miruroUrl = 'https://www.miruro.tv/watch/5xsd0uWbttra_ZDjNCkIaQptEu-bsD4U/kuroneko-to-majo-no-kyoushitsu?ep=1';
+    const asbWorker = (await cdp.send('Target.getTargets')).targetInfos.find(target =>
+      target.type === 'service_worker' && target.url.startsWith(`chrome-extension://${report.asbId}/`));
+    const asbWorkerSession = await attach(asbWorker.targetId);
+    const navigationTarget = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    const navigationSession = await attach(navigationTarget.targetId);
+    const animeLookups = [], subtitleSearches = [];
+    cdp.listeners.push(event => {
+      if (event.method !== 'Fetch.requestPaused' || ![asbWorkerSession, navigationSession].includes(event.sessionId)) return;
+      const url = event.params.request.url;
+      let content, mime = 'application/json';
+      if (event.sessionId === navigationSession) {
+        mime = 'text/html';
+        content = '<!doctype html><html><head><title>Miruro reload regression fixture</title></head><body><div class="anime-title"><a>Cowboy Bebop</a></div></body></html>';
+      } else if (new URL(url).hostname === 'graphql.anilist.co') {
+        animeLookups.push(JSON.parse(event.params.request.postData).variables.title);
+        content = JSON.stringify({ data: { Page: { media: [
+          { id: 5, title: { english: 'Cowboy Bebop: The Movie' } },
+          { id: 196974, title: { romaji: 'Kuroneko to Majo no Kyoushitsu', english: 'The Classroom of the Black Cat and a Witch' } },
+        ] } } });
+      } else if (url.includes('/entries/search?')) {
+        subtitleSearches.push(url);
+        content = JSON.stringify([{ id: 88, name: 'Kuroneko to Majo no Kyoushitsu' }]);
+      } else if (url.includes('/entries/88/files')) {
+        content = JSON.stringify([{ name: 'episode.srt', url: 'https://jimaku.cc/entry/88/download/episode.srt' }]);
+      } else {
+        mime = 'text/plain'; content = subtitle;
+      }
+      cdp.send('Fetch.fulfillRequest', { requestId: event.params.requestId, responseCode: 200,
+        responseHeaders: [{ name: 'Content-Type', value: mime }], body: Buffer.from(content).toString('base64') }, event.sessionId)
+        .catch(error => { report.interceptionError = error.message; });
+    });
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://www.miruro.tv/*' }] }, navigationSession);
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: 'https://graphql.anilist.co/*' }, { urlPattern: 'https://graphql.anilist.co' }, { urlPattern: 'https://jimaku.cc/*' }] }, asbWorkerSession);
+    await cdp.evaluate('chrome.storage.local.set({ apiKey: "offline-fixture" })', session);
+    const automaticFileExists = name => cdp.evaluate(`(async () => {
+      try { const dir = await testRoot.getDirectoryHandle('Kuroneko to Majo no Kyoushitsu');
+        return (await (await dir.getFileHandle(${JSON.stringify(name)})).getFile()).size > 0;
+      } catch (error) { if (error.name === 'NotFoundError') return false; throw error; }
+    })()`, session);
+    await cdp.send('Page.navigate', { url: miruroUrl }, navigationSession);
+    await waitFor(() => automaticFileExists('episode.srt'), 'automatic Miruro subtitle');
+    report.cases.push({ name: 'Miruro opaque ID resolves correct anime and saves automatically',
+      passed: subtitleSearches.length === 1 && subtitleSearches[0].includes('anilist_id=196974') && animeLookups[0] === 'kuroneko to majo no kyoushitsu' });
+    await cdp.send('Page.reload', {}, navigationSession);
+    await waitFor(() => automaticFileExists('episode (1).srt'), 'automatic subtitle after same-URL reload');
+    report.cases.push({ name: 'same-URL browser reload automatically saves again',
+      passed: subtitleSearches.length === 2 && subtitleSearches.every(url => url.includes('anilist_id=196974')) });
+    await cdp.send('Target.closeTarget', { targetId: navigationTarget.targetId });
+    await waitFor(async () => !await automaticFileExists('episode.srt') && !await automaticFileExists('episode (1).srt'), 'automatic cleanup after Miruro tab closes');
+    report.cases.push({ name: 'automatic Miruro files remain tracked for tab-close cleanup', passed: true });
+    await cdp.send('Fetch.disable', {}, asbWorkerSession);
     server = http.createServer((request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="fdm-managed.bin"' });
       response.end('FDM integration fixture');

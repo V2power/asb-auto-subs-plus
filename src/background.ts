@@ -106,8 +106,12 @@ async function getApiKey(): Promise<string | null> {
 async function fetchAnilistId(title: string) {
   const query = `
   query ($title: String) {
-    Media (search: $title, type: ANIME) {
-      id
+    Page (perPage: 10) {
+      media (search: $title, type: ANIME) {
+        id
+        title { romaji english native }
+        synonyms
+      }
     }
   }
   `;
@@ -129,7 +133,16 @@ async function fetchAnilistId(title: string) {
       return;
     }
     const anilistObject: AnilistObject = await anilistResponse.json();
-    return anilistObject.data.Media.id;
+    const normalizeTitle = (value: string) => value.normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    const searchTitle = normalizeTitle(title);
+    const matches = anilistObject.data.Page.media.filter(media =>
+      Number.isSafeInteger(media.id) && media.id > 0 &&
+      [media.title.romaji, media.title.english, media.title.native, ...(media.synonyms ?? [])]
+        .some(candidate => typeof candidate === "string" && normalizeTitle(candidate) === searchTitle));
+    // Search relevance alone is not proof of identity. Don't download another
+    // anime when no title matches, or when the matching title is ambiguous.
+    return matches.length === 1 ? matches[0].id : undefined;
   } catch (e) {
     if (typeof e === "string") {
       e.toUpperCase();
@@ -681,6 +694,7 @@ async function downloadSub(
       selectedSub,
       formattingOptions,
     );
+    if (!isStillCurrent()) return null;
     const filename = selectedSub.entryName
       ? `${safeAnimeFolder(selectedSub.entryName)}/${selectedSub.name}` : selectedSub.name;
     const downloadId = typeof formattedContent === "string"
@@ -912,7 +926,7 @@ async function processNavigation(details: NavigationDetails) {
       await removeLastDownloaded(details.tabId);
     }
     if (!isStillCurrent()) return;
-    const downloadKey = episodeKey;
+    const downloadKey = `${details.tabId}:${navigationRevision}:${episodeKey}`;
     if (downloadsInProgress.has(downloadKey)) return;
     downloadsInProgress.add(downloadKey);
     try {
@@ -956,6 +970,11 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading") {
+    lastProcessedUrls.delete(tabId);
+    navigationRevisions.set(tabId, (navigationRevisions.get(tabId) ?? 0) + 1);
+    return;
+  }
   if (changeInfo.status !== "complete" || !tab.url) return;
   void processNavigation({ tabId, frameId: 0, url: tab.url });
 });
@@ -994,6 +1013,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (typeof result === "string") {
         return notifyError(tabId, result).then(() => sendResponse({ error: result }));
       }
+      if (result === null) { sendResponse({ skipped: true }); return; }
       const message = result.asbPlayerLoaded
         ? `Downloaded and loaded ${result.name} into asbplayer`
         : `Successfully downloaded ${result.name}`;

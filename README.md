@@ -1,6 +1,6 @@
 # asb auto subs
 
-A small chrome extension using the jimaku.cc API to automatically download japanese subtitles of the anime episode you are currently watching. Works on hianime.to and miruro.tv (can be extended on request)
+A small chrome extension using the jimaku.cc API to automatically download japanese subtitles of the anime episode you are currently watching. Works on hianime.to and miruro (tv, online, to, cx) (can be extended on request)
 Intended to be used in combination with [asbplayer](https://github.com/killergerbah/asbplayer), another extension, to insert the subtitles into the video.
 This fork is higly AI coded, I focused in the security and permissions but be aware!
 
@@ -99,3 +99,20 @@ Search/file lists are cached for five minutes. Rate limits and HTTP 429 pause th
 batch until the server reset time. Pending files remain selected for retry and
 keep their anime folder. Provider/format groups start collapsed; their checkboxes
 select the group without expanding it.
+
+## Miruro detection and reloads (0.0.55)
+
+Current Miruro routes use an opaque site identifier and an anime title slug.
+ASB resolves that slug through AniList and requires a matching title or synonym;
+it never treats a numeric prefix of an opaque identifier as an AniList ID.
+Legacy routes containing only a numeric AniList ID still work.
+Reloading an episode resets navigation deduplication and runs automatic saving
+again. Repeated events within one loaded document remain deduplicated, and
+requests invalidated by a reload do not continue to process old metadata.
+
+Regression tests cover the reported Kuroneko to Majo no Kyoushitsu route,
+misleading numeric prefixes, unrelated search results, query parameter order,
+legacy routes and reloads. The optional browser runner serves an offline Miruro
+fixture at the reported URL and intercepts AniList/Jimaku requests with test
+responses, exercising actual extension injection, reload events and tab-close
+cleanup without using a live API key.

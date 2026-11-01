@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "asb auto subs",
   "description": "An extension to automatically download the subtitle file of the currently played anime intended to be used with asbplayer to add the downloaded subtitles to the video.",
-  "version": "0.0.54",
+  "version": "0.0.55",
   "background": {
     "scripts": ["dist/background.js"]
   },
@@ -22,6 +22,8 @@
     "https://www.miruro.online/*",
     "https://miruro.to/*",
     "https://www.miruro.to/*",
+    "https://miruro.cx/*",
+    "https://www.miruro.cx/*",
     "https://jimaku.cc/*",
     "https://graphql.anilist.co/*",
     "http://127.0.0.1:8766/*"

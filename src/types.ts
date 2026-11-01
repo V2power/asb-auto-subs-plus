@@ -20,8 +20,12 @@ export type JimakuEntry = {
 
 export type AnilistObject = {
   data: {
-    Media: {
-      id: number;
+    Page: {
+      media: Array<{
+        id: number;
+        title: { romaji?: string | null; english?: string | null; native?: string | null };
+        synonyms?: string[];
+      }>;
     };
   };
 };
